@@ -5,23 +5,16 @@ import time
 import random
 import io
 import requests
-from dotenv import load_dotenv
-
-# Força saída UTF-8 no Windows para evitar erro com emojis
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-    except: pass
+import json
+import urllib.parse
 import pyperclip
 import pandas as pd
-import urllib.parse
+import win32clipboard
 from datetime import datetime
 from PIL import Image
 from io import BytesIO
-import win32clipboard
-import json
-
-# Imports do Selenium
+from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -32,91 +25,159 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
 
-# --- CARREGA AS SENHAS DO COFRE ---
+# --- CONFIGURAÇÕES INICIAIS ---
 load_dotenv()
 
-# --- CONFIGURAÇÕES DE ENGENHARIA DE CHATBOT ---
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except: pass
+
 SIMULAR_DIGITACAO = True
 DELAY_MIN_ENTRE_MENSAGENS = 5
 DELAY_MAX_ENTRE_MENSAGENS = 15
+ARQUIVO_HISTORICO = "historico_ofertas.csv"
+AQUIVO_CACHE_ENVIO = "cache_envios_24h.json"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --- GRUPOS DE DESTINO WHATSAPP ---
-# Adicione ou remova grupos aqui. O robô envia para TODOS os grupos da lista.
-GRUPOS_ALVO = [
-    # "Instagram @celle.tech",        # Grupo de teste
-     "Achadinhos da Celle • AI",     # Grupo oficial
-]
+GRUPOS_ALVO = ["Achadinhos da Celle • AI"]
 
-# --- FUNÇÕES DE UTILIDADE ---
+# --- UTILITÁRIOS ---
 
 def human_delay(min_s=1, max_s=3):
-    """Gera uma pausa aleatória com jitter para simular comportamento humano."""
-    tempo = random.uniform(min_s, max_s)
-    time.sleep(tempo)
+    """Simula pausas humanas aleatórias."""
+    time.sleep(random.uniform(min_s, max_s))
 
 def formatar_para_whatsapp(texto_html):
-    """
-    Converte tags HTML/Telegram para Markdown do WhatsApp e limpa a mensagem.
-    Foca em escaneabilidade e Link Preview.
-    """
+    """Converte tags HTML/Telegram para Markdown do WhatsApp"""
     if not texto_html: return ""
-    
-    # Conversões básicas de estilo
     mapa_tags = {
-        "<b>": "*", "</b>": "*",
-        "<strong>": "*", "</strong>": "*",
-        "<i>": "_", "</i>": "_",
-        "<em>": "_", "</em>": "_",
-        "<s>": "~", "</s>": "~",
-        "<strike>": "~", "</strike>": "~"
+        "<b>": "*", "</b>": "*", "<strong>": "*", "</strong>": "*",
+        "<i>": "_", "</i>": "_", "<em>": "_", "</em>": "_",
+        "<s>": "~", "</s>": "~", "<strike>": "~", "</strike>": "~"
     }
     
     texto_whats = texto_html
     for tag, replacement in mapa_tags.items():
         texto_whats = texto_whats.replace(tag, replacement)
         
-    # Remove tags de link do Telegram (mantendo o link seco para o preview do WhatsApp)
-    # Ex: <a href='URL'>TEXTO</a> -> URL
     texto_whats = re.sub(r'<a href=[\'"](.*?)[\'"]>(.*?)</a>', r'\1', texto_whats)
-    
-    # Se a mensagem já termina com um link (quebrado por \n ou fim de string), não faz nada.
-    # Caso contrário, tenta mover o link para o fim para garantir o Preview.
-    if "http" in texto_whats:
-        # Se o texto já termina com o link, não precisamos mexer
-        regex_final_link = r'http[s]?://[^\s]+$'
-        if re.search(regex_final_link, texto_whats.strip()):
-            return texto_whats.strip()
 
-        partes = texto_whats.split("http")
-        if len(partes) > 1:
-            link = "http" + partes[-1]
-            corpo = "http".join(partes[:-1]).strip()
-            texto_whats = f"{corpo}\n\n{link}"
-            
+    if "http" in texto_whats:
+        if not re.search(r'http[s]?://[^\s]+$', texto_whats.strip()):
+            partes = texto_whats.split("http")
+            if len(partes) > 1:
+                link = "http" + partes[-1]
+                corpo = "http".join(partes[:-1]).strip()
+                texto_whats = f"{corpo}\n\n{link}"
     return texto_whats.strip()
 
 def simular_digitacao(driver, elemento, texto):
-    """Simula a digitação de uma mensagem para enganar sistemas de detecção de bot."""
+    """Simula digitação humana para evitar detecção de bot."""
     if not SIMULAR_DIGITACAO:
         elemento.send_keys(texto)
         return
-
-    # No WhatsApp Web, colar o texto inteiro é comum em humanos (copy-paste), 
-    # mas o ato de clicar e esperar um pouco antes de colar ajuda muito.
     human_delay(0.5, 1.5)
-    
-    # Para mensagens muito curtas, digitamos letra a letra
     if len(texto) < 20:
         for char in texto:
             elemento.send_keys(char)
             time.sleep(random.uniform(0.05, 0.2))
     else:
-        # Para mensagens longas (ofertas), simulamos o "pensar" e o "colar"
         pyperclip.copy(texto)
         ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
         human_delay(1, 2)
+
+def baixar_imagem_temporaria(url_imagem, nome_arquivo="temp_oferta.jpg"):
+    try:
+        resposta = requests.get(url_imagem, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        if resposta.status_code == 200:
+            with open(nome_arquivo, 'wb') as f:
+                f.write(resposta.content)
+            return os.path.abspath(nome_arquivo)
+    except Exception as e:
+        print(f"| ❌ Erro ao baixar imagem: {e}")
+    return None
+
+def copiar_imagem_para_clipboard(caminho_imagem):
+    image = Image.open(caminho_imagem)
+    output = BytesIO()
+    image.convert("RGB").save(output, "BMP")
+    data = output.getvalue()[14:]
+    output.close()
+    win32clipboard.OpenClipboard()
+    win32clipboard.EmptyClipboard()
+    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+    win32clipboard.CloseClipboard()
+
+def extrair_valor_numerico(preco_texto):
+    if not preco_texto:
+        return None
+    try:
+        txt = preco_texto.replace('.', '')
+        matches = re.findall(r'\d+,\d+', txt)
+        if matches: return min([float(m.replace(',', '.')) for m in matches])
+        match_simples = re.findall(r'\d+\d*', preco_texto.replace(',', '.'))
+        return float(match_simples[0]) if match_simples else None
+    except: return None
+
+def formatar_preco_br(preco):
+    try:
+        return f"R$ {float(preco):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except: return str(preco)
+
+# --- ANÁLISE DE DADOS E CACHE ---
+
+def carregar_cache():
+    if not os.path.exists(ARQUIVO_CACHE_ENVIOS): return {}
+    try:
+        with open(ARQUIVO_CACHE_ENVIOS, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except: return {}
+
+def salvar_cache(cache):
+    with open(ARQUIVO_CACHE_ENVIOS, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=4, ensure_ascii=False)
+
+def verificar_se_ja_enviou_24h(titulo, grupo=None):
+    chave = f"{grupo}::{titulo.strip().lower()}" if grupo else titulo.strip().lower()
+    cache = carregar_cache()
+    cache[chave] = time.time()
+    salvar_cache(cache)
+
+def atualizar_historico(arquivo_csv, titulo, preco_coletado):
+    if not preco or preco <= 0: return
+    data_hoje = datetime.now().strftime("%Y-%m-%d")
+    nova_linha = pd.DataFrame([{'Data': data_hoje, 'Preco': preco, 'Produto': titulo}])
+    if not os.path.exists(ARQUIVO_HISTORICO):
+        nova_linha.to_csv(ARQUIVO_HISTORICO, index=False)
+    else:
+        df = pd.read_csv(ARQUIVO_HISTORICO)
+        if not ((df['Produto'] == titulo) & (df['Data'] == data_hoje)).any():
+            pd.concat([df, nova_linha]).to_csv(ARQUIVO_HISTORICO, index=False)
+
+# --- CORE DO RASTREADOR (RPA) ---
+
+def iniciar_driver():
+    options = Options()
+    options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+    try:
+        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    except:
+        options = Options()
+        options.add_argument("--start-maximized")
+        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)     
+
+def focar_aba_whatsapp(driver):
+    print("| 🔍 Procurando aba do WhatsApp...")
+    for handle in driver.window_handles:
+        driver.switch_to.window(handle)
+        time.sleep(1)
+        if "whatsapp" in driver.title.lower() or "web.whatsapp" in driver.current_url:
+            driver.execute_script("window.focus();")
+            return True
+    return False
 
 def validar_link_afiliado(url, loja):
     """Verifica se o link contém os IDs de rastreio necessários."""
@@ -134,31 +195,6 @@ def validar_link_afiliado(url, loja):
             return True
     return True
 
-def baixar_imagem_temporaria(url_imagem, nome_arquivo="temp_oferta.jpg"):
-    """Baixa a imagem da oferta para o PC para poder ser copiada."""
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resposta = requests.get(url_imagem, headers=headers, timeout=10)
-        if resposta.status_code == 200:
-            with open(nome_arquivo, 'wb') as f:
-                f.write(resposta.content)
-            return os.path.abspath(nome_arquivo)
-    except Exception as e:
-        print(f"| ❌ Erro ao baixar imagem: {e}")
-    return None
-
-def copiar_imagem_para_clipboard(caminho_imagem):
-    """Mágica que coloca a imagem na área de transferência do Windows."""
-    image = Image.open(caminho_imagem)
-    output = BytesIO()
-    image.convert("RGB").save(output, "BMP")
-    data = output.getvalue()[14:]
-    output.close()
-    
-    win32clipboard.OpenClipboard()
-    win32clipboard.EmptyClipboard()
-    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
-    win32clipboard.CloseClipboard()
 
 def produto_eh_bloqueado(titulo):
     """Verifica se o título contém algum termo da lista de bloqueio."""
@@ -168,45 +204,6 @@ def produto_eh_bloqueado(titulo):
         if termo.lower() in titulo_lower:
             return True
     return False
-
-def extrair_valor_numerico(preco_texto):
-    if not preco_texto:
-        return None
-    try:
-        # Encontra todos os padrões de preço (0,00 ou 0.00)
-        # Primeiro, removemos pontos de milhar para não confundir (ex: 1.234,56 -> 1234,56)
-        txt = preco_texto.replace('.', '')
-        # Agora buscamos números com vírgula (formato BR)
-        matches = re.findall(r'\d+,\d+', txt)
-        
-        precos = []
-        for m in matches:
-            val = float(m.replace(',', '.'))
-            precos.append(val)
-        
-        if precos:
-            # Em caso de range (R$ 10 - R$ 20), pegamos o MENOR preço
-            return min(precos)
-            
-        # Fallback para números sem vírgula
-        match_simples = re.findall(r'\d+\.?\d*', preco_texto.replace(',', '.'))
-        if match_simples:
-            return float(match_simples[0])
-            
-        return None
-    except Exception:
-        return None
-    
-def formatar_preco_br(preco):
-    try:
-        preco = float(preco)
-    except (ValueError, TypeError):
-        return str(preco)
-    parte_inteira = int(preco)
-    parte_decimal = int(round((preco - parte_inteira) * 100))
-    texto_inteiro = "{:,}".format(parte_inteira).replace(",", ".")
-    texto_decimal = f"{parte_decimal:02d}"
-    return f"R$ {texto_inteiro},{texto_decimal}"
 
 def gerar_chamada_inteligente(titulo, preco_atual, categoria="", autor=""):
     """Lê o título, o preço e a categoria para criar uma frase de impacto com a persona do Robô da Celle."""
@@ -668,40 +665,7 @@ def extrair_dados_produto_ml(driver, preco_maximo=None):
 # =========================================================
 # PARTE SHOPEE (CORRIGIDA)
 # =========================================================
-def focar_aba_whatsapp(driver):
-    print("| 🔍 Procurando aba do WhatsApp...")
-    
-    try:
-        abas_abertas = driver.window_handles
-        
-        for handle in abas_abertas:
-            try:
-                driver.switch_to.window(handle)
-                
-                # O PULO DO GATO AUMENTADO: Espera 1.5s para forçar o Chrome a "acordar" a aba
-                time.sleep(1.5) 
-                
-                titulo = str(driver.title).lower()
-                url = str(driver.current_url).lower()
-                
-                # RAIO-X: Agora o robô vai te contar o que ele tá vendo em cada aba
-                print(f"|   👀 Lendo aba: Título='{titulo[:15]}' | URL='{url[:20]}'")
 
-                # Verificação ampla
-                if "whatsapp" in titulo or "web.whatsapp" in url:
-                    driver.execute_script("window.focus();")
-                    print(f"| ✅ WhatsApp detectado e fixado: {driver.title}")
-                    return True
-                    
-            except Exception as e:
-                print(f"|   ⚠️ Erro ao ler aba: {e}")
-                continue
-                
-    except Exception as e:
-        print(f"| ⚠️ Erro fatal ao acessar janelas: {e}")
-
-    print("| ❌ WhatsApp não encontrado. Dica: Deixe a aba do Zap aberta e sem modais na frente.")
-    return False
 
 def processar_painel_shopee(driver, produtos_processados_set, preco_maximo=None):
     if preco_maximo:
@@ -2128,40 +2092,7 @@ DOMINIO_BASE = "https://www.magazineluiza.com.br"
 
 chrome_driver = None
 
-def iniciar_driver():
-    global chrome_driver
-    if chrome_driver is None:
-        options = webdriver.ChromeOptions()
-        
-        # --- TENTA CONEXÃO NO CHROME REAL (OPCIONAL: PARA SHOPEE ANTI-BOT) ---
-        options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
-        
-        try:
-            print("[SISTEMA] Tentando conexão com Chrome aberto na porta 9222 (Modo Anti-Bot)...")
-            service = Service(ChromeDriverManager().install())
-            chrome_driver = webdriver.Chrome(service=service, options=options)
-            print("[SISTEMA] ✅ CONECTADO: Usando sua janela do Chrome carregada.")
-        except Exception:
-            print("[SISTEMA] ℹ️ Janela 9222 não detectada. Iniciando MODO ISOLADO padrão...")
-            # Fallback para o modo antigo se o usuário não abriu o .bat
-            options = webdriver.ChromeOptions()
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            options.add_argument(r"--user-data-dir=C:\Users\Camim\whatsapp_selenium_profile")
-            options.add_argument("--profile-directory=Default")
-            options.add_experimental_option("detach", True)
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--start-maximized")
 
-            service = Service(ChromeDriverManager().install())
-            chrome_driver = webdriver.Chrome(service=service, options=options)
-            chrome_driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-    return chrome_driver
 
 # =========================================================
 # FUNÇÕES DE RASTREAMENTO PADRÃO
@@ -2557,45 +2488,7 @@ def preparar_mensagem_cupons(lista_cupons):
 # FUNÇÕES DE HISTÓRICO E ENVIO
 # =========================================================
 
-def atualizar_historico(arquivo_csv, titulo, preco_coletado):
-    import pandas as pd
-    from datetime import datetime
-    import os
 
-    # 1. BLINDAGEM: Não salva lixo no banco de dados
-    if preco_coletado is None or preco_coletado <= 0:
-        return
-
-    data_hoje = datetime.now().strftime("%Y-%m-%d")
-    nova_linha = pd.DataFrame([{'Data': data_hoje, 'Preco': preco_coletado, 'Produto': titulo}])
-
-    try:
-        # 2. BLINDAGEM: Evita o EmptyDataError se o arquivo existir mas estiver corrompido (0 bytes)
-        if not os.path.exists(arquivo_csv) or os.stat(arquivo_csv).st_size == 0:
-            nova_linha.to_csv(arquivo_csv, index=False)
-            print(f"| 📊 [HISTÓRICO] Arquivo '{arquivo_csv}' criado/reiniciado.")
-            return
-
-        df_existente = pd.read_csv(arquivo_csv)
-        df_produto = df_existente[df_existente['Produto'] == titulo]
-        
-        # Se a data de hoje não estiver nos registros DESSE produto, adicionamos
-        if data_hoje not in df_produto['Data'].values:
-            df_atualizado = pd.concat([df_existente, nova_linha], ignore_index=True)
-            df_atualizado.to_csv(arquivo_csv, index=False)
-            print(f"| 📊 [HISTÓRICO] Preço salvo: {titulo[:20]}... (R$ {preco_coletado:.2f})")
-        else:
-            pass # Já registrado hoje, não faz nada para não floodar o terminal
-
-    except Exception as e:
-        # 3. BLINDAGEM: Fallback para não perder o dado se o CSV principal der pau
-        print(f"| ⚠️ Erro ao acessar o banco de dados principal: {e}")
-        try:
-            backup_csv = arquivo_csv.replace(".csv", "_backup.csv")
-            nova_linha.to_csv(backup_csv, mode='a', header=not os.path.exists(backup_csv), index=False)
-            print(f"| 💾 Salvo no arquivo de segurança: {backup_csv}")
-        except:
-            pass
     
 def analisar_historico(arquivo_csv, titulo, preco_atual, preco_antigo=None):
     try:
@@ -2902,21 +2795,7 @@ def enviar_whatsapp_robusto(driver, nome_grupo, mensagem, caminho_imagem):
 # =========================================================
 ARQUIVO_CACHE_ENVIOS = "cache_envios_24h.json"
 
-def carregar_cache():
-    if not os.path.exists(ARQUIVO_CACHE_ENVIOS):
-        return {}
-    try:
-        with open(ARQUIVO_CACHE_ENVIOS, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return {}
 
-def salvar_cache(cache):
-    try:
-        with open(ARQUIVO_CACHE_ENVIOS, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"| ⚠️ Erro ao salvar cache: {e}")
 
 def normalizar_texto(texto):
     """LIMPEZA PROFUNDA: Remove espaços, pontuação e converte para minúsculo."""
