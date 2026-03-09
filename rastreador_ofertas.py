@@ -147,15 +147,15 @@ def verificar_se_ja_enviou_24h(titulo, grupo=None):
     salvar_cache(cache)
 
 def atualizar_historico(arquivo_csv, titulo, preco_coletado):
-    if not preco or preco <= 0: return
+    if not preco_coletado or preco_coletado <= 0: return
     data_hoje = datetime.now().strftime("%Y-%m-%d")
-    nova_linha = pd.DataFrame([{'Data': data_hoje, 'Preco': preco, 'Produto': titulo}])
-    if not os.path.exists(ARQUIVO_HISTORICO):
-        nova_linha.to_csv(ARQUIVO_HISTORICO, index=False)
+    nova_linha = pd.DataFrame([{'Data': data_hoje, 'Preco': preco_coletado, 'Produto': titulo}])
+    if not os.path.exists(arquivo_csv):
+        nova_linha.to_csv(arquivo_csv, index=False)
     else:
-        df = pd.read_csv(ARQUIVO_HISTORICO)
+        df = pd.read_csv(arquivo_csv)
         if not ((df['Produto'] == titulo) & (df['Data'] == data_hoje)).any():
-            pd.concat([df, nova_linha]).to_csv(ARQUIVO_HISTORICO, index=False)
+            pd.concat([df, nova_linha]).to_csv(arquivo_csv, index=False)
 
 # --- CORE DO RASTREADOR (RPA) ---
 
@@ -434,6 +434,15 @@ def gerar_chamada_inteligente(titulo, preco_atual, categoria="", autor=""):
                 "Manutenção da base ativada! Estoque de limpeza garantido sem pesar no bolso! 🧼✨",
                 "O fim do sofrimento no supermercado! Produto de primeira pesado chegando direto na sua porta! 🧺📉"
             ])
+
+        # 👇 SEU NOVO BLOCO DE PÁSCOA ENTRA AQUI 👇
+        elif re.search(r'\b(chocolate|ovo de páscoa|bombom|ferrero|lacta|nestlé|garoto|cacau show)\b', titulo_lower):
+            return random.choice([
+                "🐰 Alerta de Páscoa! O coelhinho (e meus algoritmos) acharam esse desconto! 🍫📉",
+                "Ovo de Páscoa tá caro? Não no meu turno! Olha esse achadinho que a Celle pediu pra mandar: 🐰💸",
+                "Estoque de chocolate garantido antes que os preços subam! 🍫✨"
+            ])
+        # 👆 FIM DO BLOCO DE PÁSCOA 👆
             
         # Genérico Supermercado (Gatilho do ML Full / Entrega rápida)
         else:
@@ -1976,6 +1985,25 @@ LISTA_MESTRE_ML = [
         "grupo": "MANHA", # O horário da manhã é excelente para donas de casa planejando o dia
         "delay_min": 5, "delay_max": 10
     },
+    # --- PÁSCOA: Compras de Impulso e Sazonal ---
+    {
+        "nome": "ML - Esquenta Páscoa (Chocolates)",
+        # 👇 COLE O SEU LINK DO MERCADO LIVRE AQUI 👇
+        "url_lista": "COLE_AQUI_O_SEU_LINK_DO_ESQUENTA_PASCOA",
+        "loja": "MERCADOLIVRE",
+        "categoria": "SUPERMERCADO", # Usamos Supermercado para acionar os gatilhos certos de copy
+        "grupo": "MANHA",
+        "delay_min": 5, "delay_max": 10
+    },
+    {
+        "nome": "ML - Esquenta Páscoa (Chocolates)",
+        # 👇 COLE O MESMO LINK AQUI 👇
+        "url_lista": "COLE_AQUI_O_SEU_LINK_DO_ESQUENTA_PASCOA",
+        "loja": "MERCADOLIVRE",
+        "categoria": "SUPERMERCADO",
+        "grupo": "ALMOCO",
+        "delay_min": 5, "delay_max": 10
+    },
     {
         "nome": "ML - Animais (Ofertas)",
         "url_lista": "https://www.mercadolivre.com.br/ofertas?container_id=MLB-OFFERS-SEARCH&category=MLB1071#filter_applied=category&filter_initialize=category&category=MLB1071",
@@ -2906,6 +2934,15 @@ def main(alvos_a_rodar, preco_maximo=None):
             if categoria_atual in categorias_para_pular:
                 print(f"| ⏭️ SKIPPED: Categoria '{categoria_atual}' ignorada.")
                 continue
+
+            # 👇 BLOQUEIO TEMPORÁRIO DO MAGALU 👇
+            if "magazinevoce" in alvo.get("url_lista", "") or "magazineluiza" in alvo.get("dominio_base", ""):
+                print(f"| ⏭️ PULEI: Loja '{alvo['nome']}' ignorada temporariamente (Erro de Login).")
+                continue
+            # 👆 FIM DO BLOQUEIO 👆
+
+            try: driver.switch_to.window(aba_navegacao)
+            except: pass
             
             try: driver.switch_to.window(aba_navegacao)
             except: pass
