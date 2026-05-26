@@ -37,13 +37,278 @@ if sys.platform == "win32":
 SIMULAR_DIGITACAO = True
 DELAY_MIN_ENTRE_MENSAGENS = 5
 DELAY_MAX_ENTRE_MENSAGENS = 15
-ARQUIVO_HISTORICO = "historico_ofertas.csv"
-AQUIVO_CACHE_ENVIO = "cache_envios_24h.json"
+ARQUIVO_HISTORICO = os.getenv("ARQUIVO_HISTORICO", "historico_ofertas.csv")
+# Arquivo de cache de envios (agora por default 5 dias)
+ARQUIVO_CACHE_ENVIOS = os.getenv("ARQUIVO_CACHE_ENVIOS", "cache_envios_5dias.json")
+# Retenção do cache em segundos (default = 5 dias = 120 horas = 432000s)
+CACHE_RETENCAO_SECONDS = int(os.getenv("CACHE_RETENCAO_SECONDS", "432000"))
+WA_CLICK_TIMEOUT = int(os.getenv("WA_CLICK_TIMEOUT", "12"))
+# CAMPANHA SAZONAL (mudar para ativar prioridade de palavras-chave em campanhas)
+CAMPANHA_SAZONAL = os.getenv("CAMPANHA_SAZONAL", "NENHUM")
+
+# Dicionário simples de palavras-chave prioritárias por campanha
+CAMPANHAS_PRIORIDADE = {
+    "COPA": ["camisa", "tv", "projetor", "bandeira", "camiseta"],
+    "NAMORADOS": ["perfume", "anel", "joia", "colar", "rosa"],
+    "NENHUM": []
+}
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-GRUPOS_ALVO = ["Achadinhos da Celle • AI"]
+GRUPOS_ALVO = [
+    "Achadinhos da Celle • AI",       # 👈 O bot vai tratar como o seu GRUPO comum de testes
+    "[CANAL] Achadinhos da Celle • AI" # 👈 O bot vai saber que este é o CANAL oficial!
+]
 
+AWIN_AFFILIATE_ID = os.getenv("AWIN_AFFILIATE_ID", "SEU_ID_AWIN_AQUI")
+AWIN_MID_KABUM = "17629"       # Confirme esse número no seu painel Awin
+AWIN_MID_ALIEXPRESS = "18879"  # Confirme esse número no seu painel Awin
+
+# VALIDAÇÃO DE SEGURANÇA: Avisa no terminal se o .env falhar
+if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "None":
+    print("| ⚠️ ALERTA: 'TELEGRAM_BOT_TOKEN' não foi encontrado no seu arquivo .env!")
+    print("| Verifique se o arquivo .env está na mesma pasta do script principal.")
+
+if not TELEGRAM_CHAT_ID or TELEGRAM_CHAT_ID == "None":
+    print("| ⚠️ ALERTA: 'TELEGRAM_CHAT_ID' não foi encontrado no seu arquivo .env!")
+
+
+def enviar_mensagem_telegram_seguro(texto):
+    """Envia mensagem ao Telegram lendo as credenciais do .env com tratamento de erros."""
+    # Se não houver token, sai da função sem tentar fazer o request (evita o erro 404)
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "None":
+        print("[TELEGRAM] Envio cancelado: Token ausente no ambiente.")
+        return False
+        
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": texto,
+            "parse_mode": "HTML"  # Permite formatação estilizada se necessário
+        }
+
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            print("[TELEGRAM] Mensagem enviada com sucesso!")
+            return True
+        else:
+            print(f"[TELEGRAM] Erro na API do Telegram: {r.text}")
+            return False
+            
+    except Exception as e:
+        # Se a internet cair ou o Telegram falhar, o WhatsApp NÃO trava
+        print(f"[TELEGRAM] Falha de conexão isolada (Fluxo mantido): {e}")
+        return False
+
+def enviar_canal_exclusivo(driver, nome_canal, mensagem, caminho_foto=None):
+    try:
+        print(f"\n📢 [FLUXO CANAL] Iniciando envio para: {nome_canal}")
+        
+        # 1. Clica no botão da aba 'Canais' (Atualizações)
+        xpath_botao_canais = (
+            '//*[local-name()="title" and contains(text(), "wds-ic-channels")]/ancestor::button | '
+            '//*[local-name()="title" and contains(text(), "wds-ic-channels")]/ancestor::span | '
+            '//button[@aria-label="Canais"] | //button[@title="Canais"] | '
+            '//span[@data-icon="status-v3"]'
+        )
+        
+        botao_canais = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, xpath_botao_canais))
+        )
+        botao_canais.click()
+        time.sleep(0.5)
+        driver.execute_script("arguments[0].click();", botao_canais)
+        
+        print("| ✅ Mudou de fato para a aba Canais.")
+        time.sleep(3.5)
+        
+        # 2. Localiza a caixa de pesquisa na aba Canais
+        xpath_pesquisa_canal = '//input[@role="textbox"][@aria-label="Pesquisar ou começar uma nova conversa"] | //input[@data-tab="3"]'
+        caixa_pesquisa = WebDriverWait(driver, 12).until(
+            EC.presence_of_element_located((By.XPATH, xpath_pesquisa_canal))
+        )
+        caixa_pesquisa.click()
+        time.sleep(0.5)
+        caixa_pesquisa.send_keys(Keys.CONTROL + "a")
+        caixa_pesquisa.send_keys(Keys.BACKSPACE)
+        caixa_pesquisa.send_keys(nome_canal)
+        print(f"| ✍️ Digitado na pesquisa de canais: '{nome_canal}'")
+        time.sleep(2.5) # Um tiquinho a mais de tempo para o WhatsApp filtrar o canal na tela
+        
+        # 🎯 NOVA LÓGICA: ENTER + CLIQUE DE GARANTIA PARA ABRIR O CANAL
+        # 🎯 NOVA LÓGICA ULTRA-ROBUSTA (Baseada no F12 real)
+        try:
+            caixa_pesquisa.send_keys(Keys.ENTER)
+            print("| ⌨️ Pressionado ENTER para abrir o canal.")
+            time.sleep(2)
+            
+            # Seletor baseado no HTML extraído: busca o frame do título que contém o texto limpo
+            xpath_canal_f12 = '//div[@data-testid="cell-frame-title"]//span[contains(text(), "Achadinhos da Celle")]'
+            
+            # Procura o elemento e sobe até o botão clicável da lista
+            alvo_canal = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.XPATH, xpath_canal_f12))
+            )
+            
+            # Força o clique diretamente no contêiner usando JavaScript para não ter erro
+            driver.execute_script("arguments[0].click();", alvo_canal)
+            print("| 🖱️ Clique cirúrgico (F12) executado no canal!")
+            
+        except Exception as e_abrir:
+            print(f"| ⚠️ O seletor F12 falhou, tentando clique genérico no primeiro item da lista: {e_abrir}")
+            try:
+                # Se falhar, clica no primeiro item de lista genérico que estiver na tela
+                driver.execute_script("document.querySelector('div[role=\"listitem\"]').click();")
+                print("| 🛡️ Contingência: Canal aberto via seletor de lista genérico.")
+            except Exception as e_critico:
+                print(f"| ❌ Falha crítica ao tentar abrir o canal: {e_critico}")
+        
+        time.sleep(4) # Tempo generoso para carregar o chat no meio da tela
+        
+        # 🎯 AJUSTE DE SELETOR: Garante o clique no campo de texto do Canal antes de colar
+        xpath_texto_canal = (
+            '//footer//div[@contenteditable="true"] | '
+            '//div[@id="main"]//div[@contenteditable="true"] | '
+            '//div[contains(@class, "lexical-rich-text-input")]//div[@contenteditable="true"]'
+        )
+        
+        # 3. Envio de Mídia com Imagem e Legenda Juntas
+        if caminho_foto and os.path.exists(caminho_foto):
+            print("| 📸 Preparando imagem e copiando para a Área de Transferência...")
+            copiar_imagem_para_clipboard(caminho_foto)
+            
+            campo_texto = WebDriverWait(driver, 12).until(
+                EC.element_to_be_clickable((By.XPATH, xpath_texto_canal))
+            )
+            campo_texto.click()
+            time.sleep(1.5)
+            
+            # Executa o Colar físico (Ctrl + V)
+            actions = ActionChains(driver)
+            actions.key_down(Keys.CONTROL).send_keys("v").key_up(Keys.CONTROL).perform()
+            print("| ⏳ Aguardando tela de prévia de mídia do WhatsApp...")
+            time.sleep(5) 
+            
+            msg_final_whats = formatar_para_whatsapp(mensagem)
+            
+            try:
+                # Foca no campo de legenda da janela preta de mídias
+                xpath_legenda = '//div[@role="textbox"][@data-tab="10"] | //div[contains(@class, "lexical-rich-text-input")]//div[@contenteditable="true"]'
+                campo_legenda = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, xpath_legenda))
+                )
+                
+                driver.execute_script("arguments[0].focus();", campo_legenda)
+                time.sleep(0.5)
+                simular_digitacao(driver, campo_legenda, msg_final_whats)
+                time.sleep(1.5)
+                
+                # Clica no botão verde de Enviar da prévia de mídias
+                xpath_botao_enviar_midia = '//span[@data-icon="send"] /ancestor::div[@role="button"] | //div[@aria-label="Enviar"] | //span[@data-icon="send"]'
+                botao_enviar = WebDriverWait(driver, 8).until(
+                    EC.presence_of_element_located((By.XPATH, xpath_botao_enviar_midia))
+                )
+                driver.execute_script("arguments[0].click();", botao_enviar)
+                print("| 🚀 Sucesso absoluto! Imagem com legenda postadas juntas no Canal!")
+                
+            except Exception as e_midia:
+                print(f"| ⚠️ Falha na prévia de mídia: {e_midia}. Forçando Enter global...")
+                actions_texto = ActionChains(driver)
+                actions_texto.send_keys(Keys.ENTER).perform()
+            
+            time.sleep(3)
+            
+        else:
+            # Caso não vá imagem, envia o texto puro direto
+            campo_texto = WebDriverWait(driver, 12).until(
+                EC.element_to_be_clickable((By.XPATH, xpath_texto_canal))
+            )
+            campo_texto.click()
+            msg_final_whats = formatar_para_whatsapp(mensagem)
+            simular_digitacao(driver, campo_texto, msg_final_whats)
+            time.sleep(1)
+            campo_texto.send_keys(Keys.ENTER)
+            print("| 🚀 Apenas texto enviado ao Canal!")
+            time.sleep(2)
+            
+        # =========================================================================
+        # 🎯 RETORNO SEGURO E FORÇADO PARA CONVERSAS (MULTI-XPATHS + JS) 🎯
+        # =========================================================================
+        print("| 🔄 Finalizando ciclo do canal com sucesso. Retornando para a aba de Conversas...")
+
+        def voltar_para_conversas():
+            """Função auxiliar para garantir retorno"""
+            try:
+                xpath_aba_conversas = (
+                    '//*[local-name()="title" and contains(text(), "wds-ic-chat")]/ancestor::button | '
+                    '//*[local-name()="title" and contains(text(), "wds-ic-chat")]/ancestor::span | '
+                    '//button[@aria-label="Conversas"] | //button[@title="Conversas"] | '
+                    '//span[@data-icon="chat-v3"]'
+                )
+
+                botao_conversas = WebDriverWait(driver, 8).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath_aba_conversas))
+                )
+                driver.execute_script("arguments[0].click();", botao_conversas)
+                time.sleep(1)
+                return True
+            except Exception as e:
+                print(f"| ⚠️ Tentativa 1 de voltar falhou: {e}")
+                try:
+                    driver.execute_script("document.querySelector('button[aria-label=\"Conversas\"]')?.click() || document.querySelector('span[data-icon=\"chat-v3\"]')?.closest('button')?.click();")
+                    time.sleep(1)
+                    return True
+                except Exception as e2:
+                    print(f"| ⚠️ Tentativa 2 de voltar falhou: {e2}")
+                    return False
+
+        if voltar_para_conversas():
+            print("| ✅ Voltou com sucesso para a aba de Conversas.")
+            time.sleep(2)
+        else:
+            print("| ⚠️ Não conseguiu voltar, mas o envio foi realizado.")
+
+        # --- NOVA AÇÃO: Aguarda e clica no ícone SVG 'wds-ic-chat' usando XPath exato fornecido ---
+        try:
+            xpath_svg_chat = "//*[local-name()='svg' and .//*[local-name()='title' and text()='wds-ic-chat']]/.."
+            svg_parent = WebDriverWait(driver, WA_CLICK_TIMEOUT).until(
+                EC.element_to_be_clickable((By.XPATH, xpath_svg_chat))
+            )
+            driver.execute_script("arguments[0].click();", svg_parent)
+            print("| ✅ Clique no ícone SVG 'wds-ic-chat' realizado com sucesso.")
+        except TimeoutException:
+            print("| ⚠️ Timeout aguardando o ícone SVG 'wds-ic-chat' — não foi possível clicar.")
+        except Exception as e_svg_click:
+            print(f"| ⚠️ Erro ao tentar clicar no SVG 'wds-ic-chat': {e_svg_click}")
+
+        return True
+        
+    except Exception as e:
+        print(f"| ❌ Erro no fluxo dedicado do Canal: {e}")
+        # 🛡️ PLANO DE CONTINGÊNCIA - SEMPRE TENTAR VOLTAR
+        print("| 🛡️ Acionando contingência: Forçando retorno para aba de Conversas...")
+        tentativas = 0
+        while tentativas < 3:
+            tentativas += 1
+            try:
+                xpath_voltar_chats = (
+                    '//*[local-name()="title" and contains(text(), "wds-ic-chat")]/ancestor::button | '
+                    '//*[local-name()="title" and contains(text(), "wds-ic-chat")]/ancestor::span | '
+                    '//button[@aria-label="Conversas"] | //button[@title="Conversas"] | '
+                    '//span[@data-icon="chat-v3"]'
+                )
+                botao_voltar = driver.find_element(By.XPATH, xpath_voltar_chats)
+                driver.execute_script("arguments[0].click();", botao_voltar)
+                time.sleep(1.5)
+                print(f"| ✅ Retornou para Conversas na tentativa {tentativas}")
+                break
+            except Exception as e_retry:
+                print(f"| ⚠️ Tentativa {tentativas} de retorno falhou: {e_retry}")
+                time.sleep(0.5)
+
+        return False
+    
 # --- UTILITÁRIOS ---
 
 def human_delay(min_s=1, max_s=3):
@@ -140,12 +405,6 @@ def salvar_cache(cache):
     with open(ARQUIVO_CACHE_ENVIOS, 'w', encoding='utf-8') as f:
             json.dump(cache, f, indent=4, ensure_ascii=False)
 
-def verificar_se_ja_enviou_24h(titulo, grupo=None):
-    chave = f"{grupo}::{titulo.strip().lower()}" if grupo else titulo.strip().lower()
-    cache = carregar_cache()
-    cache[chave] = time.time()
-    salvar_cache(cache)
-
 def atualizar_historico(arquivo_csv, titulo, preco_coletado):
     if not preco_coletado or preco_coletado <= 0: return
     data_hoje = datetime.now().strftime("%Y-%m-%d")
@@ -162,22 +421,47 @@ def atualizar_historico(arquivo_csv, titulo, preco_coletado):
 def iniciar_driver():
     options = Options()
     options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+    
+    print("| 🌐 Tentando conectar ao Chrome logado (Porta 9222)...")
     try:
-        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    except:
-        options = Options()
-        options.add_argument("--start-maximized")
-        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)     
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+        print("| ✅ Conectado com sucesso ao perfil existente!")
+        return driver
+    except Exception as e:
+        print(f"\n| ❌ ERRO AO CONECTAR NA PORTA 9222:")
+        print(f"| {e}\n")
+        print("| ⚠️ Abrindo navegador NOVO (SEM LOGIN) como plano B...")
+        
+        options_fallback = Options()
+        options_fallback.add_argument("--start-maximized")
+        return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options_fallback)     
 
 def focar_aba_whatsapp(driver):
     print("| 🔍 Procurando aba do WhatsApp...")
+    
+    # 1. Tenta mapear se ela já está aberta
     for handle in driver.window_handles:
-        driver.switch_to.window(handle)
-        time.sleep(1)
-        if "whatsapp" in driver.title.lower() or "web.whatsapp" in driver.current_url:
-            driver.execute_script("window.focus();")
-            return True
-    return False
+        try:
+            driver.switch_to.window(handle)
+            time.sleep(0.5)
+            if "whatsapp" in driver.title.lower() or "web.whatsapp" in driver.current_url:
+                driver.execute_script("window.focus();")
+                print("| ✅ WhatsApp encontrado e focado!")
+                return handle # 👈 Retorna o ID da aba em vez de True
+        except:
+            continue
+            
+    # 2. Se rodar o loop inteiro e não achar, ela mesma abre a aba!
+    print("| ⚠️ WhatsApp não detectado. Abrindo nova aba...")
+    driver.execute_script("window.open('');") # Abre aba em branco
+    driver.switch_to.window(driver.window_handles[-1]) # Vai para a nova aba
+    driver.get("https://web.whatsapp.com")
+    
+    print("| ⏳ Aguardando 15 segundos para o carregamento do WhatsApp Web...")
+    time.sleep(15)
+    
+    return driver.current_window_handle # 👈 Retorna o ID da nova aba aberta
 
 def validar_link_afiliado(url, loja):
     """Verifica se o link contém os IDs de rastreio necessários."""
@@ -197,20 +481,44 @@ def validar_link_afiliado(url, loja):
 
 
 def produto_eh_bloqueado(titulo):
-    """Verifica se o título contém algum termo da lista de bloqueio."""
-    if not titulo: return False
-    titulo_lower = titulo.lower()
-    for termo in TERMOS_BLOQUEADOS:
-        if termo.lower() in titulo_lower:
-            return True
+    """Verifica se o título contém algum termo da lista de bloqueio.
+    
+    Usa .lower() blindado para garantir que maiúsculas/minúsculas não quebrem o filtro.
+    """
+    if not titulo:
+        return False
+    
+    # Garante que o título está em minúsculo para comparar certo
+    titulo_produto_minusculo = titulo.lower()
+    
+    # Verifica se QUALQUER termo bloqueado está dentro do título
+    if any(termo.lower() in titulo_produto_minusculo for termo in TERMOS_BLOQUEADOS):
+        print(f"❌ Produto bloqueado pelo filtro: {titulo}")
+        return True
+    
     return False
 
 def gerar_chamada_inteligente(titulo, preco_atual, categoria="", autor=""):
-    """Lê o título, o preço e a categoria para criar uma frase de impacto com a persona do Robô da Celle."""
-    import random 
-    import re
+    """Lê o título, o preço e a categoria para criar uma frase de impacto com a persona do Robô da Celle.
     
-    if not titulo: return random.choice(["🤖 Bi-bi-bop! ALERTA DE OFERTA!", "🚨 ACHADINHO LIBERADO PELA CELLE!"])
+    Se nenhuma categoria específica for detectada, usa frases genéricas de achadinhos.
+    """
+    
+    # Lista de frases genéricas e dinâmicas para fallback e qualquer tipo de produto
+    FRASES_GENERICAS_ACHADINHOS = [
+        "🕵️‍♀️ Olha o que eu acabei de garimpar para vocês! ✨",
+        "🚨 Alerta de preço baixo na tela! 📉",
+        "🤖 Eis que surge mais um super achadinho! 💎",
+        "✨ Meus algoritmos acharam esse tesouro escondido! 🔍",
+        "🎯 Mais um achadinho imperdível pra vocês! 🔥",
+        "💰 Preço que choca POSITIVAMENTE os meus circuitos! 💥",
+        "🛍️ Novo ciclo, novos achadinhos! Confirma aí 👇",
+        "🤖 Bi-bi-bop! ALERTA DE OFERTA!",
+        "🚨 ACHADINHO LIBERADO PELA CELLE!"
+    ]
+    
+    if not titulo:
+        return random.choice(FRASES_GENERICAS_ACHADINHOS)
     
     titulo_lower = titulo.lower()
     categoria_upper = categoria.upper() if categoria else ""
@@ -320,9 +628,9 @@ def gerar_chamada_inteligente(titulo, preco_atual, categoria="", autor=""):
     # 5. CONSOLES E GAMES PREMIUM (Com Toque Pessoal)
     if any(term in titulo_lower for term in ["playstation", "ps5", "ps4", "xbox", "nintendo switch", "console", "dualsense"]):
         return random.choice([
-            "A Celle me avisou: setup de respeito pra não ter desculpa quando perder no Cuphead! 🎮✨", 
+            "Setup de respeito montado! Agora a única desculpa pra perder é a falta de habilidade mesmo. 🎮😅✨", 
             "Conforto imbatível pra não colocar a culpa do lag em mim! 🛋️🎮",
-            "Pra não queimar a cozinha no Overcooked e jogar de boa! 🎮🍳"
+            "Setup de respeito pra não ter desculpa quando perder na gameplay! 🎮✨"
         ])
 
     # 6. REGRA GAMER E HOME OFFICE (Foco na profissão)
@@ -404,55 +712,54 @@ def gerar_chamada_inteligente(titulo, preco_atual, categoria="", autor=""):
                 "Estoque do mês garantido! Precinho excelente que meus radares encontraram pros peludos! 🐕🐈"
             ])
         
-    # 10. SALA VIP: SUPERMERCADO E LIMPEZA (Foco na necessidade e entrega rápida)
+    # 10. SALA VIP: PÁSCOA (Transformado em Regra Independente para não falhar!)
+    if re.search(r'\b(chocolate|ovo de páscoa|bombom|ferrero|lacta|nestlé|garoto|cacau show)\b', titulo_lower):
+        return random.choice([
+            "🐰 Alerta de Páscoa! O coelhinho (e meus algoritmos) acharam esse desconto! 🍫📉",
+            "Ovo de Páscoa tá caro? Não no meu turno! Olha esse achadinho que a Celle pediu pra mandar: 🐰💸",
+            "Estoque de chocolate garantido antes que os preços subam! 🍫✨"
+        ])
+
+    # 11. SALA VIP: SUPERMERCADO E LIMPEZA (Foco na necessidade e entrega rápida)
     if categoria_upper == "SUPERMERCADO" or re.search(r'\b(azeite|café|cafe|cápsula|sabão|sabao|omo|ariel|amaciante|papel higiênico|fralda|leite|nutella|limpeza|veja)\b', titulo_lower):
         
-        # Sub-nicho: Azeite (Ouro líquido - Gatilho de alívio)
+        # Sub-nicho: Azeite
         if "azeite" in titulo_lower:
             return random.choice([
                 "O roubo do azeite acabou! Minha IA farejou esse preço justo pra você fazer o estoque! 🫒📉",
                 "Alerta de ouro líquido na promoção! Pode colocar no carrinho sem medo de chorar! ✨🛒"
             ])
             
-        # Sub-nicho: Café (Combustível - Piada com a persona do robô/tech)
+        # Sub-nicho: Café
         elif re.search(r'\b(café|cafe|cápsula|nespresso|três corações|dolce gusto)\b', titulo_lower):
             return random.choice([
                 "Combustível de humano detectado com sucesso! Seus níveis de bateria agradecem (e o bolso também)! ☕🤖",
                 "Pra garantir a energia do dia a dia (e aguentar a rotina) com desconto! ⚡☕"
             ])
             
-        # Sub-nicho: Fraldas (Gatilho de utilidade máxima e economia)
+        # Sub-nicho: Fraldas
         elif "fralda" in titulo_lower:
             return random.choice([
                 "Atenção mamães e papais: hora de fazer o estoque! Fralda no precinho pra salvar o orçamento do mês! 👶💸",
                 "Meus processadores calcularam: essa promo de fralda tá valendo muito a pena! 🍼📉"
             ])
             
-        # Sub-nicho: Limpeza / Sabão (Gatilho de dona de casa/rotina)
+        # Sub-nicho: Limpeza / Sabão
         elif re.search(r'\b(sabão|sabao|omo|ariel|amaciante|veja|detergente)\b', titulo_lower):
             return random.choice([
                 "Manutenção da base ativada! Estoque de limpeza garantido sem pesar no bolso! 🧼✨",
                 "O fim do sofrimento no supermercado! Produto de primeira pesado chegando direto na sua porta! 🧺📉"
             ])
-
-        # 👇 SEU NOVO BLOCO DE PÁSCOA ENTRA AQUI 👇
-        elif re.search(r'\b(chocolate|ovo de páscoa|bombom|ferrero|lacta|nestlé|garoto|cacau show)\b', titulo_lower):
-            return random.choice([
-                "🐰 Alerta de Páscoa! O coelhinho (e meus algoritmos) acharam esse desconto! 🍫📉",
-                "Ovo de Páscoa tá caro? Não no meu turno! Olha esse achadinho que a Celle pediu pra mandar: 🐰💸",
-                "Estoque de chocolate garantido antes que os preços subam! 🍫✨"
-            ])
-        # 👆 FIM DO BLOCO DE PÁSCOA 👆
             
-        # Genérico Supermercado (Gatilho do ML Full / Entrega rápida)
+        # Genérico Supermercado
         else:
             return random.choice([
                 "Fazer mercado sem sair de casa e pagando menos? Meus algoritmos aprovam essa ideia! 🛒⚡",
                 "Aquela comprinha de mês que chega voando na sua casa! Aproveita o desconto! 📦💨",
                 "Achadinho de despensa liberado pela Celle! Reponha o estoque pagando preço de atacado! 🥫💸"
             ])
-
-    # 11. SALA VIP: MARCAS QUERIDINHAS E BEBIDAS (Gatilhos de Identificação e Autoridade)
+        
+    # 12. SALA VIP: MARCAS QUERIDINHAS E BEBIDAS (Gatilhos de Identificação e Autoridade)
     
     # Sub-nicho: Cuidados Pessoais e Cabelo
     if re.search(r'\b(dove|nivea|rexona|elseve|lola cosmetics|lola|o boticário|boticario|natura)\b', titulo_lower):
@@ -503,25 +810,43 @@ def gerar_chamada_inteligente(titulo, preco_atual, categoria="", autor=""):
             ])
 
 
-    # 12. FALLBACK DE PREÇO
+    # 13. FALLBACK DE PREÇO
     if preco_atual and preco_atual <= 40:
         return random.choice([
             "Aquele precinho camarada que a gente ama! 😍",
             "Menos de R$ 40? O robô aqui aprova colocar no carrinho! 🛒"
         ])
 
-    # 13. GATILHOS GENÉRICOS DE ALTO IMPACTO
+    # 14. GATILHOS GENÉRICOS DE ALTO IMPACTO (FALLBACK FINAL)
     return random.choice([
-        "🤖 Bi-bi-bop! A inteligência artificial aqui farejou esse achadinho!", 
-        "🚨 ALERTA DE OFERTA DA CELLE!", 
-        "🔥 ESSE DESCONTO VALE A PENA!", 
-        "✨ Enquanto a Celle não olha, eu separei esse achadinho pra vocês:"
+        "🕵️‍♀️ Olha o que eu acabei de garimpar para vocês! ✨",
+        "🚨 Alerta de preço baixo na tela! 📉",
+        "🤖 Eis que surge mais um super achadinho! 💎",
+        "✨ Meus algoritmos acharam esse tesouro escondido! 🔍",
+        "🎯 Mais um achadinho imperdível pra vocês! 🔥",
+        "💰 Preço que choca POSITIVAMENTE os meus circuitos! 💥",
+        "🛍️ Novo ciclo, novos achadinhos! Confirma aí 👇"
     ])
 
     
 def gerar_link_afiliado(url_original, loja):
     try:
-        if loja == "MAGALU":
+        # --- LÓGICA AWIN (KABUM E ALIEXPRESS) ---
+        if loja in ["KABUM", "ALIEXPRESS"]:
+            merchant_id = AWIN_MID_KABUM if loja == "KABUM" else AWIN_MID_ALIEXPRESS
+            
+            # Limpa parâmetros de rastreio velhos da URL original para não dar conflito
+            url_limpa = url_original.split('?')[0] 
+            
+            # Codifica a URL no formato que a Awin exige (ued)
+            url_encoded = urllib.parse.quote(url_limpa, safe='')
+            
+            # Monta o Deep Link Oficial da Awin
+            link_awin = f"https://www.awin1.com/cread.php?awinmid={merchant_id}&awinaffid={AWIN_AFFILIATE_ID}&ued={url_encoded}"
+            return link_awin
+
+        # --- LÓGICA EXISTENTE ---
+        elif loja == "MAGALU":
             if "magazinevoce.com.br/magazinecelle" not in url_original:
                 codigo_produto = url_original.split('/')[-2] 
                 return f"https://www.magazinevoce.com.br/magazinecelle/p/{codigo_produto}/"
@@ -544,45 +869,120 @@ def gerar_link_afiliado(url_original, loja):
 def gerar_link_ml_via_barra_topo(driver):
     print("| 🔗 ML: Buscando barra de afiliado no topo...")
     try:
-        # Abre o modal de compartilhamento
-        try:
-            btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='generate_link_button']")))
-            btn.click()
-        except:
-            botao_alt = driver.find_element(By.XPATH, "//button[contains(., 'Compartilhar')]")
-            driver.execute_script("arguments[0].click();", botao_alt)
+        def validar_link_ml(link_value):
+            return bool(link_value and any(dominio in link_value for dominio in ["meli.la", "mercadolivre", "ml.com"]))
 
-        print("| Aguardando modal e gerando link...")
-        time.sleep(2.5) # Tempo essencial para o ML processar o encurtador
+        def tentar_obter_link_da_caixa():
+            seletores_input = [
+                "input.andes-form-control__field",
+                ".andes-form-control__field input",
+                "input[data-testid='copy_link_input']",
+                "input[type='text'][value*='mercadolivre']",
+                "input[type='text'][value*='meli']",
+                "[data-testid='link-input'] input",
+                "input[placeholder*='meli']",
+                "input[aria-label*='link']"
+            ]
+            for seletor_input in seletores_input:
+                try:
+                    caixa_link = WebDriverWait(driver, 8).until(
+                        EC.visibility_of_element_located((By.CSS_SELECTOR, seletor_input))
+                    )
+                    link_final = caixa_link.get_attribute("value")
+                    if validar_link_ml(link_final):
+                        print(f"| 🎯 SUCESSO! Link capturado direto do campo: {link_final}")
+                        return link_final
+                except Exception:
+                    continue
+            return None
 
-        # PLANO A: Ler direto da caixinha de texto (Muito mais seguro que o botão copiar)
-        try:
-            # Esse seletor busca o campo de input onde o link https://meli.la/ aparece no seu print
-            caixa_link = driver.find_element(By.CSS_SELECTOR, "input.andes-form-control__field, .andes-form-control__field")
-            link_final = caixa_link.get_attribute("value")
-            
-            # Adicionamos 'meli.la' na lista de domínios permitidos
-            if link_final and any(dominio in link_final for dominio in ["meli.la", "mercadolivre", "ml.com"]):
-                print(f"| 🎯 SUCESSO! Link capturado direto do campo: {link_final}")
-                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-                return link_final
-        except:
-            pass
+        def tentar_copiar_clipboard():
+            botao_copiar_seletores = [
+                "button[data-testid='copy-button__label_link']",
+                "button[aria-label*='opiar']",
+                "//button[contains(., 'Copiar')]"
+            ]
+            for seletor_copia in botao_copiar_seletores:
+                try:
+                    tipo = By.XPATH if "//" in seletor_copia else By.CSS_SELECTOR
+                    botao = WebDriverWait(driver, 8).until(
+                        EC.element_to_be_clickable((tipo, seletor_copia))
+                    )
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", botao)
+                    driver.execute_script("arguments[0].click();", botao)
+                    print(f"| 🟢 Clique no botão de copiar: {seletor_copia}")
+                    for _ in range(6):
+                        link_final = pyperclip.paste()
+                        if validar_link_ml(link_final):
+                            print(f"| 🎯 SUCESSO! Link copiado: {link_final}")
+                            return link_final
+                        time.sleep(0.5)
+                except Exception:
+                    continue
+            return None
 
-        # PLANO B: Se o de cima falhar, tenta o botão de copiar físico
-        botao_copiar = driver.find_element(By.CSS_SELECTOR, "button[data-testid='copy-button__label_link']")
-        driver.execute_script("arguments[0].click();", botao_copiar)
-        time.sleep(1)
-        link_final = pyperclip.paste()
-        
-        if any(dom in link_final for dom in ["meli.la", "mercadolivre"]):
+        # PASSO 1: Tenta abrir o modal de geração de link
+        botao_encontrado = False
+        seletores_botao = [
+            "button[data-testid='generate_link_button']",
+            "//button[contains(., 'Compartilhar')]",
+            "//button[contains(., 'compartilhar')]",
+            "[data-testid='share-button']",
+            "button[aria-label*='ompartilh']",
+            "button[data-testid='share_button']",
+            "//button[contains(., 'Gerar link')]",
+            "//button[contains(., 'Link')]"
+        ]
+
+        for seletor in seletores_botao:
+            try:
+                tipo = By.XPATH if "//" in seletor else By.CSS_SELECTOR
+                btn = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((tipo, seletor)))
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                time.sleep(0.5)
+                driver.execute_script("arguments[0].click();", btn)
+                print(f"| ✅ Botão encontrado: {seletor}")
+                botao_encontrado = True
+                break
+            except Exception:
+                continue
+
+        if not botao_encontrado:
+            print("| ⚠️ Nenhum botão de compartilhar encontrado")
+            return None
+
+        print("| ⏳ Aguardando modal do ML para gerar link...")
+        time.sleep(2)
+
+        # 1) Tenta capturar diretamente do campo input do modal (mais confiável)
+        link_final = tentar_obter_link_da_caixa()
+        if link_final:
             ActionChains(driver).send_keys(Keys.ESCAPE).perform()
             return link_final
 
+        # 2) Fallback: tenta pegar a URL atual da barra (menos ideal, mas útil quando o modal falha)
+        try:
+            atual = driver.current_url
+            if atual and any(dom in atual for dom in ["meli.la", "mercadolivre", "ml.com"]):
+                # Limpa querystrings para ter uma chave estável
+                parsed = urllib.parse.urlparse(atual)
+                cleaned = parsed._replace(query="").geturl()
+                print(f"| ⚠️ Fallback: usando URL atual como link: {cleaned}")
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+                return cleaned
+        except Exception as e_fallback:
+            print(f"| ⚠️ Fallback por URL atual falhou: {e_fallback}")
+
+        print("| ⚠️ Falha: não consegui capturar o link do modal nem pela URL atual.")
+
     except Exception as e:
         print(f"| ❌ Erro ao gerar link: {e}")
-        try: ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-        except: pass
+    finally:
+        try:
+            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        except:
+            pass
+
     return None
 
 def extrair_dados_produto_ml(driver, preco_maximo=None):
@@ -671,773 +1071,129 @@ def extrair_dados_produto_ml(driver, preco_maximo=None):
 
     return titulo, preco_atual, preco_antigo, nota, image_url, vendas_count, is_best_seller, is_platinum
 
-# =========================================================
-# PARTE SHOPEE (CORRIGIDA)
-# =========================================================
-
-
-def processar_painel_shopee(driver, produtos_processados_set, preco_maximo=None):
-    if preco_maximo:
-        print(f"\n======== 🟠 SHOPEE PAINEL (ATÉ R${preco_maximo:.0f}) ========")
-    else:
-        print("\n======== 🟠 SHOPEE (PAINEL -> NOVA ABA SEGURA) ========")
-    url_painel = "https://affiliate.shopee.com.br/offer/product_offer"
-    
-    # 1. BLINDAGEM DE CONTEXTO
-    try:
-        url_atual = driver.current_url
-    except Exception:
-        print("| ⚠️ Contexto perdido. Recuperando foco...")
-        try:
-            if len(driver.window_handles) > 0:
-                driver.switch_to.window(driver.window_handles[0])
-                url_atual = driver.current_url
-            else: return
-        except: return
-
-    if url_painel not in url_atual:
-        try:
-            driver.get(url_painel)
-        except:
-            print("| ❌ Erro ao carregar URL do Painel Shopee.")
-            return
-    
-    print("\n" + "="*50)
-    print("🚨 INSTRUÇÃO: Aguardando carregamento da lista (Max 60s)...")
-    print("="*50)
-    
-    try:
-        wait = WebDriverWait(driver, 60)
-        aba_painel = driver.current_window_handle 
-
-        print("| ⏳ Aguardando lista de ofertas...")
-        wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Obter link')]")))
-        print("| ✅ Lista carregada! Prosseguindo...")
-
-        driver.execute_script("window.scrollTo(0, 500);")
-        time.sleep(1)
-
-        print("| 🕵️ Mapeando produtos no painel...")
-        # Pega a lista inicial
-        botoes_painel = driver.find_elements(By.XPATH, "//*[contains(text(), 'Obter link')]")
-        # Filtra visíveis
-        produtos_encontrados = [b for b in botoes_painel if b.is_displayed()]
-        qtd_encontrada = len(produtos_encontrados)
-        print(f"| ✅ Produtos listados: {qtd_encontrada}")
-
-        contador_envios = 0
-        MAX_SHOPEE = 3
-
-        # Loop seguro usando índice
-        for i in range(qtd_encontrada):
-            if contador_envios >= MAX_SHOPEE: break
-            
-            # Garante foco no Painel a cada iteração
-            if driver.current_window_handle != aba_painel:
-                driver.switch_to.window(aba_painel)
-            
-            print(f"| --- Processando Item {i+1}/{qtd_encontrada} ---")
-
-            try:
-                # Recarrega lista para evitar StaleElement
-                botoes_painel = driver.find_elements(By.XPATH, "//*[contains(text(), 'Obter link')]")
-                produtos_encontrados = [b for b in botoes_painel if b.is_displayed()]
-                
-                if i >= len(produtos_encontrados): break
-                botao_ref = produtos_encontrados[i]
-
-                # Tenta achar o container do produto
-                card_painel = None
-                try:
-                    card_painel = botao_ref.find_element(By.XPATH, "./ancestor::div[contains(@class, 'offer-card') or contains(@class, 'product-item') or contains(@style, 'margin')]")
-                except:
-                    # Fallback genérico: sobe 5 níveis
-                    card_painel = botao_ref.find_element(By.XPATH, "./../../../../..")
-
-                titulo_previo = "Produto Shopee"
-                try:
-                    titulo_previo = card_painel.text.split('\n')[0]
-                except: pass
-
-                if titulo_previo in produtos_processados_set: 
-                    print(f"| ⏭️ Já processado hoje. Pulando.")
-                    continue
-
-                if produto_eh_bloqueado(titulo_previo):
-                    print(f"| 🚫 BLOQUEADO: '{titulo_previo}' contém termo proibido.")
-                    produtos_processados_set.add(titulo_previo)
-                    continue
-
-                print(f"| 👆 Tentando abrir produto: {titulo_previo[:30]}...")
-
-                abas_antes = set(driver.window_handles) 
-
-                # Scroll até o elemento
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", card_painel)
-                time.sleep(1)
-
-                # Clique
-                try:
-                    link_clicavel = card_painel.find_element(By.TAG_NAME, "img")
-                    driver.execute_script("arguments[0].click();", link_clicavel)
-                except:
-                    driver.execute_script("arguments[0].click();", card_painel)
-
-                print("| ⏳ Aguardando nova aba (5s)...")
-                time.sleep(5) 
-                
-                abas_depois = set(driver.window_handles)
-                nova_aba_conjunto = abas_depois - abas_antes
-                
-                if not nova_aba_conjunto:
-                    print("| ⚠️ Clique falhou (sem nova aba). Pulando item.")
-                    continue
-                
-                aba_produto = list(nova_aba_conjunto)[0]
-                driver.switch_to.window(aba_produto)
-                
-                # --- NA ABA DO PRODUTO ---
-                # (Daqui pra baixo segue a lógica normal de extração)
-                
-                preco = 0.0
-                preco_antigo = None
-                
-                titulo = None
-                try:
-                    seletores_titulo = ["h1.vR6K3w", ".vR6K3w", "div.shopee-product-info__header__title", "span.y9e30P", "h1", ".name"]
-                    for sel in seletores_titulo:
-                        try:
-                            elem = driver.find_element(By.CSS_SELECTOR, sel)
-                            if elem.text.strip():
-                                titulo = elem.text.strip()
-                                break
-                        except: continue
-                except: pass
-
-                if not titulo: titulo = titulo_previo
-
-                # Removemos a verificação global de 24h daqui, pois agora ela é feita por grupo no momento do envio.
-
-                # Extração Preços (TESTE)
-                preco = 0.0
-                preco_antigo = None
-                try:
-                    seletores_atual = [".IZPeQz.B67UQ0", ".pqTWkA", ".shopee-product-info__header__real-price"]
-                    for sel in seletores_atual:
-                        try:
-                            elem = driver.find_element(By.CSS_SELECTOR, sel)
-                            valor = extrair_valor_numerico(elem.text)
-                            if valor and valor > 0:
-                                preco = valor
-                                break
-                        except: continue
-                    
-                    seletores_antigo = [".ZA5sW5", ".v67p8K", ".shopee-product-info__header__price-before"]
-                    for sel in seletores_antigo:
-                        try:
-                            elem = driver.find_element(By.CSS_SELECTOR, sel)
-                            valor = extrair_valor_numerico(elem.text)
-                            if valor and valor > 0:
-                                preco_antigo = valor
-                                break
-                        except: continue
-                except: pass
-
-                # DETECÇÃO DE OFERTA RELÂMPAGO
-                eh_relampago = False
-                try:
-                    if driver.find_elements(By.CSS_SELECTOR, ".wV4oFQ"):
-                        eh_relampago = True
-                except: pass
-
-                if preco <= 0:
-                    print("| ⚠️ Preço não identificado. Fechando aba...")
-                    driver.close()
-                    driver.switch_to.window(aba_painel)
-                    continue
-
-                # FILTRO DE PREÇO MÁXIMO (TURNO RELÂMPAGO)
-                if preco_maximo and preco > preco_maximo:
-                    print(f"| 💲 REJEITADO (Preço): R${preco:.2f} > limite de R${preco_maximo:.0f}")
-                    driver.close()
-                    driver.switch_to.window(aba_painel)
-                    continue
-
-                # Extração Vendas
-                vendas_count = 0
-                try:
-                    sel_vendas = [".aleSBU span.AcmPRb", ".v9335u", ".shopee-product-info__header__sold-count"]
-                    for sel in sel_vendas:
-                        try:
-                            elem = driver.find_element(By.CSS_SELECTOR, sel)
-                            texto = elem.text.lower()
-                            if "mil" in texto:
-                                match_m = re.search(r"(\d+[\d\.,]*)", texto)
-                                if match_m:
-                                    val_m = match_m.group(1).replace(",", ".")
-                                    vendas_count = int(float(val_m) * 1000)
-                            else:
-                                m_v = re.search(r"(\d+)", texto)
-                                if m_v: vendas_count = int(m_v.group(1))
-                            if vendas_count > 0: break
-                        except: continue
-                except: pass
-
-                # Nota
-                nota = 0.0
-                try:
-                    sel_nota = [".F9RHbS.dQEiAI.jMXp4d", "div.shopee-product-rating__rating"]
-                    for sel in sel_nota:
-                        try:
-                            elem = driver.find_element(By.CSS_SELECTOR, sel)
-                            nota = float(elem.text.strip())
-                            if nota > 0: break
-                        except: continue
-                except: pass
-
-                # Imagem
-                img_url = None
-                try:
-                    imgs = driver.find_elements(By.TAG_NAME, "img")
-                    for img in imgs:
-                        src = img.get_attribute("src")
-                        if src and "http" in src and int(img.get_attribute("width") or 0) > 200:
-                            img_url = src
-                            break
-                except: pass
-
-                # Link Afiliado
-                print("| 🔗 Clicando em 'Obter link'...")
-                link_afiliado = None
-                try:
-                    btn_gerar = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.get-link-btn")))
-                    btn_gerar.click()
-                    time.sleep(2)
-                    try:
-                        input_link = driver.find_element(By.XPATH, "//input[contains(@value, 'shopee')]")
-                        link_afiliado = input_link.get_attribute("value")
-                    except:
-                        btn_copiar = driver.find_element(By.XPATH, "//button[contains(., 'Copiar Link')]")
-                        btn_copiar.click()
-                        time.sleep(1)
-                        link_afiliado = pyperclip.paste()
-                except: pass
-
-                print("| 🔙 Fechando aba do produto...")
-                if driver.current_window_handle == aba_produto:
-                    driver.close()
-                driver.switch_to.window(aba_painel)
-
-                # FILTROS DE QUALIDADE (OBRIGATÓRIO)
-                if not link_afiliado or not "shope.ee" in link_afiliado:
-                    print(f"| ❌ REJEITADO: Link de afiliado inválido.")
-                    continue
-
-                if not titulo or titulo == "Produto Shopee":
-                    print(f"| ❌ REJEITADO: Título não capturado.")
-                    continue
-                
-                if preco <= 0:
-                    print(f"| ❌ REJEITADO: Preço não capturado.")
-                    continue
-
-                if not img_url:
-                    print(f"| ❌ REJEITADO: Imagem não capturada.")
-                    continue
-
-                # ENVIO (CÓDIGO INTELIGENTE)
-                chamada = gerar_chamada_inteligente(titulo, preco)
-                if eh_relampago:
-                    chamada = "⚡ <b>OFERTA RELÂMPAGO! CORRE!</b>"
-                
-                msg = (
-                    f"<b>{chamada}</b>\n\n"
-                    f"📦 <b>{titulo}</b>\n\n"
-                )
-                
-                if preco_antigo and preco_antigo > preco:
-                    desconto = int(((preco_antigo - preco) / preco_antigo) * 100)
-                    msg += f"❌ <s>De: {formatar_preco_br(preco_antigo)}</s>\n"
-                    msg += f"✅ <b>Por: {formatar_preco_br(preco)}</b> ({desconto}% OFF) 📉\n"
-                else:
-                    msg += f"✅ <b>Preço Especial: {formatar_preco_br(preco)}</b> 💰\n"
-                
-                if nota > 0: msg += f"⭐ <b>Avaliação: {nota}/5.0</b>\n"
-                
-                msg += (
-                    f"\n🛒 <b>COMPRE AQUI:</b> 👇\n"
-                    f"👉 <a href='{link_afiliado}'>CLIQUE PARA VER NO SITE</a>"
-                )
-
-                enviar_telegram(msg, link_afiliado, img_url)
-                
-                # --- ENVIO PARA TODOS OS GRUPOS CONFIGURADOS ---
-                teve_envio_whats = False
-                caminho_foto = None
-                if img_url:
-                    caminho_foto = baixar_imagem_temporaria(img_url)
-
-                try:
-                    for grupo in GRUPOS_ALVO:
-                        if verificar_se_ja_enviou_24h(titulo, grupo):
-                            print(f"| ⏭️ Ignorando grupo '{grupo}': Já enviado nas últimas 24h.")
-                            continue
-
-                        print(f"| 🟢 Enviando para o grupo: {grupo}")
-                        if caminho_foto:
-                            enviar_whatsapp_robusto(driver, grupo, msg, caminho_foto)
-                        else:
-                            enviar_whatsapp(driver, grupo, msg)
-                        
-                        registrar_envio_24h(titulo, grupo)
-                        teve_envio_whats = True
-                finally:
-                    if caminho_foto and os.path.exists(caminho_foto):
-                        try: os.remove(caminho_foto)
-                        except: pass
-
-                if teve_envio_whats:
-                    produtos_processados_set.add(titulo)
-                    if isinstance(contador_envios, int):
-                        contador_envios += 1
-                else:
-                    print(f"| ℹ️ Produto '{titulo[:20]}...' já enviado para todos os grupos hoje.")
-            
-            except Exception as e:
-                print(f"| ⚠️ Erro ao processar item {i}: {e}")
-                try: 
-                    if len(driver.window_handles) > 1: driver.close()
-                    driver.switch_to.window(aba_painel)
-                except: pass
-                continue
-
-    except Exception as e:
-        print(f"| ❌ Erro Crítico Shopee: {e}")
-
-def processar_shopee_manual(driver, produtos_processados_set, preco_maximo=None):
-    if preco_maximo:
-        if preco_maximo > 50:
-             print(f"\n======== 🟠 SHOPEE MANUAL (ACHADINHOS SHOPEE) ========")
-        else:
-             print(f"\n======== 🟠 SHOPEE MANUAL (ATÉ R${preco_maximo:.0f}) ========")
-    else:
-        print("\n======== 🟠 SHOPEE (MODO MANUAL) ========")
-    
-    # --- CORREÇÃO DE BLINDAGEM AQUI ---
-    try:
-        # Tenta pegar a janela atual. Se o navegador tiver fechado, vai dar erro aqui.
-        aba_navegacao = driver.current_window_handle
-    except Exception as e:
-        print(f"| ❌ ERRO DE CONEXÃO: O navegador parece ter sido fechado.")
-        print(f"| ⚠️ Detalhe: {e}")
-        # Tenta recuperar pegando a primeira janela disponível
-        try:
-            if len(driver.window_handles) > 0:
-                driver.switch_to.window(driver.window_handles[0])
-                aba_navegacao = driver.current_window_handle
-                print("| ✅ Recuperado: Focando na primeira aba disponível.")
-            else:
-                print("| 🛑 Fatal: Nenhuma aba disponível. Encerrando manual.")
-                return
-        except:
-            print("| 🛑 Fatal: Não foi possível reconectar ao Chrome.")
-            return
-    # ----------------------------------
-
-    arquivo_links = "shopee_links.txt"
-
-    aba_navegacao = driver.current_window_handle # Salva logo no início
-    
-    if not os.path.exists(arquivo_links):
-        print(f"| ⚠️ Arquivo '{arquivo_links}' não encontrado. Adicione links no formato: link|link_afil")
-        return
-
-    links_a_processar = []
-    with open(arquivo_links, "r", encoding="utf-8") as f:
-        linhas = f.readlines()
-        for linha in linhas:
-            if "|" in linha and not linha.strip().startswith("#"):
-                partes = linha.split("|")
-                url_prod = partes[0].strip()
-                url_afil = partes[1].strip()
-                if "http" in url_prod and "http" in url_afil:
-                    links_a_processar.append((url_prod, url_afil))
-
-    if not links_a_processar:
-        print("| ℹ️ Nenhum link válido no arquivo.")
-        return
-
-    # CABEÇALHO DE TURNO DE PREÇO
-    if preco_maximo:
-        CABECALHOS_PRECO = {
-            50: "🎯 <b>ACHADINHOS DE ATÉ R$50!</b>\n✨ Seleção especial com preço baixo garantido 👇",
-            100: "💰 <b>OFERTAS DE ATÉ R$100!</b>\n🔥 Produtos incríveis que cabem no bolso 👇",
-            200: "🛍️ <b>SELEÇÃO ATÉ R$200!</b>\n📦 Os melhores achados do dia 👇",
-        }
-        msg_cabecalho = CABECALHOS_PRECO.get(
-            int(preco_maximo),
-            f"🏷️ <b>ACHADINHOS DE ATÉ R${preco_maximo:.0f}!</b>\n✨ Confira a seleção especial 👇"
-        )
-        enviar_telegram(msg_cabecalho, None, None)
-        try:
-            enviar_whatsapp(driver, "Instagram @celle.tech", msg_cabecalho)
-        except: pass
-        time.sleep(2)
-        # Garante volta para a aba de navegação após o cabeçalho
-        try: driver.switch_to.window(aba_navegacao)
-        except: pass
-
-    aba_navegacao = driver.current_window_handle
-
-    for url_produto, link_afiliado in links_a_processar:
-        print(f"\n| --- Processando Link Manual ---")
-        try:
-            # Tenta focar na aba de trabalho (opcional)
-            try: driver.switch_to.window(aba_navegacao)
-            except: pass
-            
-            url_str = str(url_produto)
-            print(f"| 🌐 Carregando: {url_str[:50]}...")
-            driver.get(url_produto)
-            time.sleep(7) 
-
-            # Tenta capturar o título com múltiplos seletores
-            titulo = "Produto Shopee"
-            seletores_titulo = [
-                "h1.vR6K3w", # Fornecido pelo usuário
-                ".vR6K3w",
-                ".shopee-product-info__header__title",
-                "span.y9e30P",
-                "div._44qnta span",
-                "h1",
-                ".Vp_hYp"
-            ]
-            
-            for sel in seletores_titulo:
-                try:
-                    elem_t = driver.find_element(By.CSS_SELECTOR, sel)
-                    texto = elem_t.text.strip()
-                    if texto and len(texto) > 10:
-                        titulo = texto
-                        break
-                except: pass
-
-            if titulo == "Produto Shopee":
-                print(f"| 🔍 DEBUG: Falha ao capturar título. URL atual: {driver.current_url[:50]}...")
-
-            preco = 0.0
-            preco_antigo = None
-            try:
-                for sel in [".IZPeQz.B67UQ0", ".pqTWkA", ".v67p8K"]:
-                    try:
-                        el = driver.find_element(By.CSS_SELECTOR, sel)
-                        val = extrair_valor_numerico(el.text)
-                        if val: preco = val; break
-                    except: pass
-                
-            # Procura preço antigo (riscado)
-                for sel in [".ZA5sW5", ".v67p8K", ".tD_S5S", ".Y76N_x"]:
-                    try:
-                        el = driver.find_element(By.CSS_SELECTOR, sel)
-                        val = extrair_valor_numerico(el.text)
-                        if val and val > preco: preco_antigo = val; break
-                    except: pass
-            except: pass
-
-            # DETECÇÃO DE OFERTA RELÂMPAGO
-            eh_relampago = False
-            try:
-                if driver.find_elements(By.CSS_SELECTOR, ".wV4oFQ"):
-                    eh_relampago = True
-            except: pass
-
-            if preco <= 0:
-                print(f"| 🔍 DEBUG: Falha ao capturar preço. URL: {url_str[:50]}...")
-                continue
-
-            # FILTRO DE PREÇO MÁXIMO (TURNO)
-            if preco_maximo and preco > preco_maximo:
-                print(f"| 💲 REJEITADO (Preço): R${preco:.2f} > limite de R${preco_maximo:.0f}")
-                continue
-
-            img_url = None
-            try:
-                # Tenta capturar imagem principal
-                imgs = driver.find_elements(By.TAG_NAME, "img")
-                for img in imgs:
-                    src = img.get_attribute("src")
-                    if src and "http" in src and int(img.get_attribute("width") or 0) > 200:
-                        img_url = src; break
-                
-                if not img_url:
-                    # Tenta forçar carregamento via scroll se imagem falhar
-                    driver.execute_script("window.scrollTo(0, 400);")
-                    time.sleep(2)
-                    imgs = driver.find_elements(By.TAG_NAME, "img")
-                    for img in imgs:
-                        src = img.get_attribute("src")
-                        if src and "http" in src and int(img.get_attribute("width") or 0) > 200:
-                            img_url = src; break
-            except: pass
-
-            if not img_url:
-                print(f"| 🔍 DEBUG: Falha ao capturar imagem.")
-
-            # EXTRAÇÃO DE QUALIDADE (SELETORES FORNECIDOS PELO USUÁRIO)
-            nota_produto = 0.0
-            qtd_avaliacoes = 0
-            qtd_vendas = 0
-
-            try:
-                # 1. Nota (ex: 4.8)
-                elem_nota = driver.find_element(By.CSS_SELECTOR, ".dQEiAI.jMXp4d")
-                val_nota = elem_nota.text.strip().replace(',', '.')
-                match_n = re.search(r'(\d+\.?\d*)', val_nota)
-                if match_n: nota_produto = float(match_n.group(1))
-            except: pass
-
-            try:
-                # 2. Número de Avaliações (ex: 3,4mil)
-                # O usuário indicou que está em um .F9RHbS dentro de um botão que contém "Avaliações"
-                btns = driver.find_elements(By.CSS_SELECTOR, "button.flex.e2p50f")
-                for b in btns:
-                    if "Avaliações" in b.text:
-                        elem_q = b.find_element(By.CSS_SELECTOR, ".F9RHbS")
-                        val_q = elem_q.text.strip().lower()
-                        # Lógica de conversão "mil"
-                        multiplicador = 1
-                        if "mil" in val_q:
-                            multiplicador = 1000
-                            val_q = val_q.replace("mil", "").replace(",", ".").strip()
-                        
-                        match_q = re.search(r'(\d+\.?\d*)', val_q)
-                        if match_q: qtd_avaliacoes = int(float(match_q.group(1)) * multiplicador)
-                        break
-            except: pass
-
-            try:
-                # 3. Quantidade de Vendas (ex: 7mil+)
-                elem_v = driver.find_element(By.CSS_SELECTOR, ".AcmPRb")
-                val_v = elem_v.text.strip().lower()
-                multiplicador_v = 1
-                if "mil" in val_v:
-                    multiplicador_v = 1000
-                    val_v = val_v.replace("mil", "").replace("+", "").replace(",", ".").strip()
-                
-                match_v = re.search(r'(\d+\.?\d*)', val_v)
-                if match_v: qtd_vendas = int(float(match_v.group(1)) * multiplicador_v)
-            except: pass
-
-            print(f"| QUALIDADE: Nota {nota_produto} | Avaliações: {qtd_avaliacoes} | Vendas: {qtd_vendas}")
-
-            # VALIDAÇÃO DE QUALIDADE (OBRIGATÓRIO)
-            if not titulo or titulo == "Produto Shopee":
-                print(f"| ⚠️ REJEITADO (Manual): Título não capturado ({titulo}).")
-                continue
-            
-            if preco <= 0:
-                print(f"| ⚠️ REJEITADO (Manual): Preço não encontrado.")
-                continue
-            
-            if not img_url:
-                print(f"| ⚠️ REJEITADO (Manual): Imagem não encontrada.")
-                continue
-
-            # FILTROS DE QUALIDADE (Mínimos sugeridos)
-            if nota_produto > 0 and nota_produto < 4.5:
-                print(f"| ❌ REJEITADO: Nota baixa ({nota_produto}).")
-                continue
-            
-            if qtd_avaliacoes > 0 and qtd_avaliacoes < 10:
-                print(f"| ❌ REJEITADO: Poucas avaliações ({qtd_avaliacoes}).")
-                continue
-
-            # A verificação global de 24h foi removida daqui, pois agora ela é feita por grupo no momento do envio.
-            
-            if titulo in produtos_processados_set:
-                print(f"| ⏭️ Já processado nesta sessão. Pulando.")
-                continue
-
-            # ENVIO MANUAL INTELIGENTE
-            chamada = gerar_chamada_inteligente(titulo, preco)
-            if eh_relampago:
-                chamada = "⚡ <b>OFERTA RELÂMPAGO! CORRE!</b>"
-            
-            msg = (
-                f"<b>{chamada}</b>\n\n"
-                f"📦 <b>{titulo}</b>\n\n"
-            )
-
-            if nota_produto > 0:
-                estrelas = "⭐" * int(nota_produto)
-                msg += f"{estrelas} ({nota_produto})\n"
-            
-            if preco_antigo and preco_antigo > preco:
-                desc = int(((preco_antigo - preco) / preco_antigo) * 100)
-                msg += f"❌ <s>De: R$ {formatar_preco_br(preco_antigo)}</s>\n"
-                msg += f"✅ <b>Por: R$ {formatar_preco_br(preco)}</b> ({desc}% OFF) 📉\n"
-            else:
-                msg += f"✅ <b>Preço: R$ {formatar_preco_br(preco)}</b>\n"
-            
-            msg += (
-                f"\n🛒 <b>COMPRE AQUI:</b> 👇\n"
-                f"👉 <a href='{link_afiliado}'>CLIQUE PARA VER</a>"
-            )
-
-            enviar_telegram(msg, link_afiliado, img_url)
-            
-            # --- ENVIO PARA TODOS OS GRUPOS CONFIGURADOS ---
-            teve_envio_whats = False
-            caminho_foto = None
-            if img_url:
-                caminho_foto = baixar_imagem_temporaria(img_url)
-
-            try:
-                for grupo in GRUPOS_ALVO:
-                    if verificar_se_ja_enviou_24h(titulo, grupo):
-                        print(f"| ⏭️ Ignorando grupo '{grupo}': Já enviado nas últimas 24h.")
-                        continue
-
-                    print(f"| 🟢 Enviando para o grupo: {grupo}")
-                    if caminho_foto:
-                        enviar_whatsapp_robusto(driver, grupo, msg, caminho_foto)
-                    else:
-                        enviar_whatsapp(driver, grupo, msg)
-                    
-                    registrar_envio_24h(titulo, grupo)
-                    teve_envio_whats = True
-            finally:
-                if caminho_foto and os.path.exists(caminho_foto):
-                    try: os.remove(caminho_foto)
-                    except: pass
-
-            if teve_envio_whats:
-                produtos_processados_set.add(titulo)
-                print(f"| ✅ Enviado com sucesso!")
-            else:
-                print(f"| ℹ️ Produto '{titulo[:20]}...' já enviado para todos os grupos hoje.")
-            
-            time.sleep(3)
-
-        except Exception as e:
-            print(f"| ⚠️ Erro: {e}")
-            continue
-
-    print("\n| ✅ Fim do processamento manual!")
-
-
 
 def gerar_link_amazon_sitestripe(driver):
     print("| 🔗 AMAZON: Iniciando captura SiteStripe...")
     
     try:
-        time.sleep(4) 
-
+        # PASSO 1: Clicar no botão inicial "Obter link: Texto"
         try:
-            print("| Procurando botão ID: 'amzn-ss-get-link-button'...")
-            
-            botao = WebDriverWait(driver, 10).until(
+            print("| 🖱️ Abrindo menu 'Obter link'...")
+            botao_abrir = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "amzn-ss-get-link-button"))
             )
-            
-            driver.execute_script("arguments[0].click();", botao)
-            print("| ✅ Botão CLICADO com sucesso!")
-            
+            driver.execute_script("arguments[0].click();", botao_abrir)
+            # Pequena pausa para o popover carregar o conteúdo interno
+            time.sleep(2) 
         except Exception as e:
-            print(f"| ❌ Erro ao clicar no botão: {e}")
-            try:
-                driver.find_element(By.ID, "amzn-ss-text-link").click()
-            except: pass
+            print(f"| ❌ Não encontrei o botão 'Obter link': {e}")
             return None
 
+        # PASSO 2 NOVO: Ir direto na caixa de texto e capturar o link pré-selecionado
         try:
-            caixa = WebDriverWait(driver, 8).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, "#amzn-ss-text-shortlink-textarea, textarea[id*='shortlink']"))
+            print("| 🖱️ Capturando o link direto da caixa de texto...")
+            # 'amzn-ss-text-shortlink-textarea' é o ID padrão da caixinha com o link curto da Amazon
+            campo_do_link = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "amzn-ss-text-shortlink-textarea"))
             )
-            time.sleep(1.5)
-            link_curto = caixa.get_attribute("value")
-
-            if link_curto and "amzn.to" in link_curto:
-                print(f"| 🎯 LINK CAPTURADO: {link_curto}")
-                
-                try:
-                    driver.execute_script("document.querySelector('button[class*=\"close-popover\"]').click()")
-                except: pass
-                
-                return link_curto
-        except:
-            print("| ❌ Botão clicado, mas a caixa de link não apareceu.")
             
-    except Exception as e:
-        print(f"| ❌ Falha técnica no SiteStripe: {e}")
+            # Pegamos o link de dentro do atributo 'value' da caixa de texto
+            link_curto = campo_do_link.get_attribute('value')
+            
+            # Se por acaso o value vier vazio (raro), tentamos o texto puro
+            if not link_curto:
+                link_curto = campo_do_link.text
 
-    return None
+        except Exception as e:
+            print(f"| ❌ O menu abriu, mas não encontrei a caixa com o link: {e}")
+            return None
+
+        # PASSO 3: Validar se o link foi capturado com sucesso
+        if link_curto and "amzn.to" in link_curto:
+            print(f"| ✅ SUCESSO! Link extraído: {link_curto}")
+            
+            # Tenta fechar o popover para não atrapalhar o próximo item
+            try:
+                driver.execute_script("document.querySelector('.a-popover-header button').click();")
+            except: 
+                pass
+                
+            return link_curto
+        
+        print("| ❌ Falha: A caixa de texto foi encontrada, mas o link estava vazio ou inválido.")
+        return None
+
+    except Exception as e:
+        print(f"| ❌ Erro geral na captura: {e}")
+        return None
 
 def gerar_link_magalu_oficial(driver):
     print("| 🔗 MAGALU: Tentando gerar link curto oficial...")
     
     try:
-        # 1. TENTA ENCONTRAR E CLICAR NO BOTÃO "GERAR LINK"
+        # --- PASSO 1: ENCONTRAR E CLICAR NO BOTÃO "GERAR LINK" ---
         botao_gerar = None
-        
-        # Adicionei o data-testid que você encontrou: "phm-button-desktop"
         seletores_botao = [
-            '[data-testid="phm-button-desktop"]',   # O seletor mais novo e preciso
-            "//button[contains(., 'Gerar link')]",  # Texto exato
-            "//div[contains(text(), 'Gerar link')]", # Às vezes é uma DIV
-            "[data-testid='generate-link-button']", # Seletor técnico comum
-            ".button-generate-link"                 # Classe legada
+            '[data-testid="phm-button-desktop"]',
+            "//button[contains(., 'Gerar link')]",
+            "//div[contains(text(), 'Gerar link')]",
+            "[data-testid='generate-link-button']"
         ]
         
         for seletor in seletores_botao:
             try:
-                if "//" in seletor:
-                    botao_gerar = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH, seletor))
-                    )
-                else:
-                    botao_gerar = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, seletor))
-                    )
+                tipo = By.XPATH if "//" in seletor else By.CSS_SELECTOR
+                # Mudança: esperar ser CLICÁVEL (element_to_be_clickable)
+                botao_gerar = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((tipo, seletor))
+                )
                 
-                # Garante que o botão está visível e clicável antes de tentar
-                if botao_gerar and botao_gerar.is_displayed():
-                    # Move a tela até o botão (ajuda muito o Selenium a não falhar)
+                if botao_gerar:
                     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", botao_gerar)
                     time.sleep(0.5)
                     break 
-            except: continue
+            except:
+                continue
             
         if not botao_gerar:
-            print("| ⚠️ Botão 'Gerar link' não encontrado (Você está logada?).")
+            print("| ⚠️ Botão 'Gerar link' não encontrado (Verifique se está logado).")
             return None
             
-        # Clica no botão
+        # Clica via JavaScript para evitar bloqueios de outros elementos na frente
         driver.execute_script("arguments[0].click();", botao_gerar)
         
-        # 2. AGUARDA O MODAL E PEGA O LINK
+        # --- PASSO 2: AGUARDA O MODAL E CAPTURA O LINK ---
         print("| ⏳ Aguardando modal...")
+        seletor_input = '[data-testid="copy-to-clipboard-input"]'
         
-        campo_link = WebDriverWait(driver, 8).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "input[value*='divulgador.magalu']"))
-        )
-        
-        link_curto = campo_link.get_attribute("value")
-        
-        if link_curto:
-            print(f"| 🎯 LINK CURTO CAPTURADO: {link_curto}")
+        try:
+            # Espera até 10 segundos para o modal processar o link
+            campo_link = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, seletor_input))
+            )
             
-            try:
-                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-            except: pass
+            link_curto = campo_link.get_attribute("value")
             
-            return link_curto
+            if link_curto and ("onelink.me" in link_curto or "magalu" in link_curto):
+                print(f"| 🎯 LINK CURTO CAPTURADO: {link_curto}")
+                
+                # Tenta fechar o modal com ESC
+                try:
+                    ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+                except:
+                    pass
+                    
+                return link_curto
+            else:
+                print(f"| ⚠️ Valor inválido capturado: {link_curto}")
+                
+        except Exception as e:
+            print(f"| ❌ O modal abriu, mas o link não apareceu: {e}")
 
     except Exception as e:
-        print(f"| ❌ Falha ao gerar link curto Magalu: {e}")
-        try: ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-        except: pass
-
+        # Este é o except que faltava para fechar o primeiro try
+        print(f"| ❌ Falha crítica na função de link: {e}")
+    
     return None
 
 def processar_feed_mercadolivre(driver, alvo, produtos_processados_set, preco_maximo=None):
@@ -1446,17 +1202,53 @@ def processar_feed_mercadolivre(driver, alvo, produtos_processados_set, preco_ma
     time.sleep(3) # Tempo suficiente para o layout Poly carregar
 
     links_para_visitar = []
+    seletores_card = [".poly-card", ".ui-search-result", ".andes-card", "[data-item-id]"]
+    seletores_link = ["a.poly-component__title", "a.ui-search-result__link", "a[href*='mercadolivre']", "a.poly-component-link"]
+
     try:
-        cards = driver.find_elements(By.CSS_SELECTOR, ".poly-card")
-        print(f"| FEED: Analisando vitrine de {len(cards)} itens...")
-        
-        # Coleta até 40 links para ter uma margem de segurança contra filtros de preço
-        for card in cards[:40]: 
+        cards = []
+        for seletor_card in seletores_card:
             try:
-                link_elem = card.find_element(By.CSS_SELECTOR, "a.poly-component__title")
-                url = link_elem.get_attribute("href")
-                links_para_visitar.append(url)
-            except: continue
+                cards = driver.find_elements(By.CSS_SELECTOR, seletor_card)
+                if cards:
+                    print(f"| ✅ Cards encontrados usando: {seletor_card} ({len(cards)} itens)")
+                    break
+            except:
+                continue
+
+        if not cards:
+            print(f"| ❌ Nenhum card encontrado com os seletores disponíveis")
+            return
+
+        print(f"| FEED: Analisando vitrine de {len(cards)} itens...")
+
+        for card in cards[:40]:
+            try:
+                # --- NOVO FILTRO DE VITRINE ---
+                if preco_maximo:
+                    try:
+                        preco_vitrine_texto = card.find_element(By.CSS_SELECTOR, ".poly-price__current .andes-money-amount__fraction").text
+                        preco_vitrine = extrair_valor_numerico(preco_vitrine_texto)
+
+                        if preco_vitrine and preco_vitrine > preco_maximo:
+                            continue
+                    except:
+                        pass
+
+                url = None
+                for seletor_link in seletores_link:
+                    try:
+                        link_elem = card.find_element(By.CSS_SELECTOR, seletor_link)
+                        url = link_elem.get_attribute("href")
+                        if url and "mercadolivre" in url:
+                            break
+                    except:
+                        continue
+
+                if url:
+                    links_para_visitar.append(url)
+            except:
+                continue
     except Exception as e:
         print(f"| ❌ Erro ao ler feed: {e}")
         return
@@ -1464,12 +1256,23 @@ def processar_feed_mercadolivre(driver, alvo, produtos_processados_set, preco_ma
     # 👇 NOVO CONTADOR AQUI 👇
     produtos_enviados_nesta_lista = 0
 
+    # Grupo principal usado para o cache (mantém compatibilidade por grupo)
+    grupo_principal = GRUPOS_ALVO[0].replace("[CANAL]", "").strip()
+
     for url_produto in links_para_visitar:
         # Verifica se já bateu a meta logo no início do loop
         if produtos_enviados_nesta_lista >= 5:
             print(f"| 🛑 Limite de 5 produtos atingido para {alvo['nome']}. Finalizando lista!")
             break
             
+        # Checagem RÁPIDA NO CACHE usando a URL (evita abrir a página desnecessariamente)
+        try:
+            if verificar_se_ja_enviou_24h(url_produto, grupo_principal):
+                print(f"⏭️ Produto já enviado nos últimos {int(CACHE_RETENCAO_SECONDS/3600)}h, pulando antes de abrir...")
+                continue
+        except Exception:
+            pass
+
         try:
             driver.get(url_produto)
             
@@ -1521,7 +1324,6 @@ def processar_feed_mercadolivre(driver, alvo, produtos_processados_set, preco_ma
             
             # 2. GATILHO DE URGÊNCIA: Se for link relâmpago, substitui a frase!
             if "lightning" in alvo.get("url_lista", ""):
-                import random
                 chamada = random.choice([
                     "⚡ <b>OFERTA RELÂMPAGO MERCADO LIVRE! CORRE!</b> ⏱️",
                     "⏳ <b>TEMPO ACABANDO! Achadinho Relâmpago no ML!</b>",
@@ -1573,7 +1375,8 @@ def processar_feed_mercadolivre(driver, alvo, produtos_processados_set, preco_ma
                     else:
                         enviar_whatsapp(driver, grupo, mensagem)
                     
-                    registrar_envio_24h(titulo, grupo)
+                    # Salva também a URL do produto no cache para checagens futuras sem abrir a página
+                    registrar_envio_24h(titulo, grupo, url=url_produto)
                     teve_envio_whats = True
                     human_delay(2, 4)
 
@@ -1587,7 +1390,17 @@ def processar_feed_mercadolivre(driver, alvo, produtos_processados_set, preco_ma
                 # 👇 AUMENTA O CONTADOR E AVISA NA TELA 👇
                 produtos_enviados_nesta_lista += 1
                 print(f"| ✅ Sucesso ({alvo['nome']}): {produtos_enviados_nesta_lista}/5")
-            
+
+                # 🔄 Retorna para a aba do Mercado Livre após todos os envios
+                try:
+                    for handle in driver.window_handles:
+                        driver.switch_to.window(handle)
+                        if "mercadolivre" in driver.current_url.lower() or "mercado" in driver.title.lower():
+                            print("| 🔙 Voltado para a aba do Mercado Livre")
+                            break
+                except Exception as e:
+                    print(f"| ⚠️ Não conseguiu voltar para ML: {e}")
+
             human_delay(5, 10)
 
         except Exception as e:
@@ -1661,18 +1474,55 @@ TERMOS_BLOQUEADOS = [
     "freezer horizontal",
     "caminhão",
     "pneu",
-    "calota"
+    "calota",
+    "chocadeira",
+    "incubadora"
 ]
 
 # =====================================================
 # LISTAS MESTRAS (ESTRATÉGIA DE GESTOR DE TRÁFEGO)
 # =====================================================
+
+LISTA_MESTRE_KABUM = [
+    {
+        "nome": "KaBuM! - Periféricos",
+        "url_lista": "https://www.kabum.com.br/promocao/PERIFERICOSOFFICE", 
+        "dominio_base": "https://www.kabum.com.br",
+        "loja": "KABUM",
+        "seletor_item_lista": 'a[href^="/produto/"]',
+        "seletor_link_lista": 'a',
+        "seletor_titulo_detalhe": 'span.text-sm.line-clamp-2',
+        "seletor_preco_detalhe": 'span.text-base.font-semibold',
+        "seletor_preco_antigo": 'span.line-through',
+        "delay_min": 5, "delay_max": 10,
+        "grupo": "NOITE",
+        "categoria": "PCGAMER"
+    }
+]
+
+LISTA_MESTRE_ALIEXPRESS = [
+    {
+        "nome": "AliExpress - Ofertas Superiores",
+        "url_lista": "https://www.aliexpress.com/ssr/300000455/Kf4fNDFeTy?spm=a2g0o.home.tab.2.38c73f40ahovnI&disableNav=YES&pha_manifest=ssr&_immersiveMode=true&_gl=1*q8qxfr*_gcl_au*NDExMjc4MjE1LjE3NzQ1NDkzMjM.*_ga*NjcwOTE4NzU4LjE3NzQ1NDkzMjQ.*_ga_VED1YSGNC7*czE3NzU4Mjg5MDgkbzIkZzEkdDE3NzU4Mjg5ODEkajU3JGwwJGgw",
+        "dominio_base": "https://pt.aliexpress.com",
+        "loja": "ALIEXPRESS",
+        "seletor_item_lista": 'div.search-card-item, a.search-card-item',
+        "seletor_link_lista": 'a',
+        "seletor_titulo_detalhe": 'h1[data-pl="product-title"]',
+        "seletor_preco_detalhe": '.product-price-value',
+        "seletor_preco_antigo": '.product-price-original',
+        "delay_min": 8, "delay_max": 15,
+        "grupo": "TARDE",
+        "categoria": "UTILIDADES"
+    }
+]
+
 LISTA_MESTRE_MAGALU = [
 
     # --- NOVO LINK MANUAL (ADICIONE ISTO AQUI) ---
     {
-        "nome": "Magazine Você - Eletroportáteis (Filtro Manual)", 
-        "url_lista": "https://www.magazinevoce.com.br/magazinecelle/eletroportateis/l/ep/price---0:5000/", 
+        "nome": "Magazine Você - Decoração", 
+        "url_lista": "https://www.magazinevoce.com.br/magazinecelle/decoracao/l/de/", 
         "dominio_base": "https://www.magazinevoce.com.br",
         "seletor_item_lista": '[data-testid="product-card-container"]', 
         "seletor_link_lista": 'a',
@@ -1680,8 +1530,8 @@ LISTA_MESTRE_MAGALU = [
         "seletor_preco_detalhe": 'p[data-testid="price-value"]',
         "seletor_preco_antigo": 'p[data-testid="price-original"]',
         "delay_min": 10, "delay_max": 15,
-        "grupo": "MANUAL", 
-        "categoria": "ELETROPORTATEIS"
+        "grupo": "NOITE", 
+        "categoria": "CASA"
     },
     # ---------------------------------------------
 
@@ -1846,10 +1696,10 @@ LISTA_MESTRE_MAGALU = [
         "dominio_base": "https://www.magazinevoce.com.br"
     },
     {
-        "nome": "Magazine Você - Bebês e Brinquedos", 
-        "url_lista": "https://www.magazinevoce.com.br/magazinecelle/bebes/l/be/", 
-        "grupo": "MANHA", # Mães costumam monitorar fraldas e itens de bebê cedo
-        "categoria": "UTILIDADES",
+        "nome": "Magazine Você - Casa Inteligente", 
+        "url_lista": "https://www.magazinevoce.com.br/magazinecelle/casa-inteligente/l/ci/", 
+        "grupo": "MANHA", 
+        "categoria": "ELETRONICOS",
         "seletor_item_lista": '[data-testid="product-card-container"]', 
         "seletor_link_lista": 'a',
         "dominio_base": "https://www.magazinevoce.com.br"
@@ -1930,8 +1780,8 @@ LISTA_MESTRE_AMAZON = [
         "categoria": "CASA"
     },
     {
-        "nome": "Amazon - Ferramentas e Construção",
-        "url_lista": "https://www.amazon.com.br/gp/bestsellers/hi/", 
+        "nome": "Amazon - Recomendações",
+        "url_lista": "https://www.amazon.com.br/b/node/122326793011", 
         "dominio_base": "https://www.amazon.com.br",
         "loja": "AMAZON",
         "seletor_item_lista": 'div[id^="p13n-asin-index-"], div.zg-grid-general-faceout', 
@@ -1987,20 +1837,20 @@ LISTA_MESTRE_ML = [
     },
     # --- PÁSCOA: Compras de Impulso e Sazonal ---
     {
-        "nome": "ML - Esquenta Páscoa (Chocolates)",
+        "nome": "ML - Ofertas do BBB",
         # 👇 COLE O SEU LINK DO MERCADO LIVRE AQUI 👇
-        "url_lista": "COLE_AQUI_O_SEU_LINK_DO_ESQUENTA_PASCOA",
+        "url_lista": "https://lista.mercadolivre.com.br/_Container_lpsm-bbb-26-ofertas-que-voce-viu-no-programa#c_container_id=MLB1483933-1&c_element_id=31952665-23bf-11f1-895a-b71f69fe2a0f&DEAL_ID=MLB1483933-1&S=landingHubbbb&V=20&T=CarouselDynamic-home&L=VER-MAIS&deal_print_id=313b6da0-23bf-11f1-b47f-a30f9dd2fbea&c_tracking_id=313b6da0-23bf-11f1-b47f-a30f9dd2fbea",
         "loja": "MERCADOLIVRE",
         "categoria": "SUPERMERCADO", # Usamos Supermercado para acionar os gatilhos certos de copy
         "grupo": "MANHA",
         "delay_min": 5, "delay_max": 10
     },
     {
-        "nome": "ML - Esquenta Páscoa (Chocolates)",
+        "nome": "ML - O melhor da Páscoa",
         # 👇 COLE O MESMO LINK AQUI 👇
-        "url_lista": "COLE_AQUI_O_SEU_LINK_DO_ESQUENTA_PASCOA",
+        "url_lista": "https://lista.mercadolivre.com.br/_Container_mlb-moda-outlet#c_container_id=MLB1075410-1&c_id=%2Fsplinter%2Fcarouselitem&c_element_order=1&c_campaign=moda-carrossel-outlet&c_label=%2Fsplinter%2Fcarouselitem&c_uid=0871e284-3280-11f1-a5b0-4786924062c9&c_element_id=0871e284-3280-11f1-a5b0-4786924062c9&c_content_origin=splinter-default&c_content_type=default&c_global_position=3&deal_print_id=08695700-3280-11f1-ad04-d1756b06fa02&c_tracking_id=08695700-3280-11f1-ad04-d1756b06fa02",
         "loja": "MERCADOLIVRE",
-        "categoria": "SUPERMERCADO",
+        "categoria": "MODA",
         "grupo": "ALMOCO",
         "delay_min": 5, "delay_max": 10
     },
@@ -2047,7 +1897,6 @@ LISTA_MESTRE_ML = [
     }
 ]
 
-LISTA_MESTRE_SHOPEE = []
 
 # =====================================================
 # LISTA ESTRATÉGICA: PÚBLICO FEMININO / TICKET BAIXO
@@ -2086,7 +1935,7 @@ LISTA_MESTRE_FEMININA = [
     # --- MAGALU: UTILIDADES DOMÉSTICAS (A "MAGA") ---
     {
         "nome": "Magazine Você - Utilidades Domésticas", 
-        "url_lista": "https://www.magazinevoce.com.br/magazinecelle/utilidades-domesticas/l/ud/", 
+        "url_lista": "https://www.magazinevoce.com.br/magazinecelle/utilidades-domesticas/l/ud/?page=1&sortOrientation=desc&sortType=soldQuantity", 
         "dominio_base": "https://www.magazinevoce.com.br",
         "seletor_item_lista": '[data-testid="product-card-container"]', 
         "seletor_link_lista": 'a',
@@ -2121,65 +1970,120 @@ DOMINIO_BASE = "https://www.magazineluiza.com.br"
 chrome_driver = None
 
 
-
 # =========================================================
 # FUNÇÕES DE RASTREAMENTO PADRÃO
 # =========================================================
 
-def rastrear_lista_produtos(url_lista, driver, seletor_item, seletor_link, dominio_base, max_list_items=40):
+def rastrear_lista_produtos(url_lista, driver, seletor_item, seletor_link, dominio_base, max_list_items=40, preco_maximo=None):
     print(f"[SELENIUM] Acessando a lista: {url_lista}")
     driver.get(url_lista)
     
-    # Seletores Híbridos MUITO mais abrangentes
+    print("| 🔄 Rolando a página para forçar o carregamento dos produtos...")
+    for _ in range(4):
+        driver.execute_script("window.scrollBy(0, 600);")
+        time.sleep(1.5)
+    
+    driver.execute_script("window.scrollTo(0, 300);")
+    
     if "amazon" in url_lista:
-        seletor_item = 'div[data-asin], .zg-grid-general-faceout, div[id^="p13n-asin-index-"]'
+        seletor_item = 'div[data-asin], .zg-grid-general-faceout, div[id^="p13n-asin-index-"], .s-result-item, a.dcl-product-link'
     elif "mercadolivre" in url_lista:
         seletor_item = '.poly-card, .andes-card, .ui-search-result'
     elif "magazinevoce" in url_lista or "magazineluiza" in url_lista:
-        # Pega qualquer variação de container que o Magalu use na vitrine
-        seletor_item = '[data-testid="product-card-container"], [data-testid="product-card"], [data-testid="mod-productcard"], ul[data-testid="list-products"] li, .sc-product-item'
+        seletor_item = 'a[data-testid="product-card-container"], [data-testid="product-card-container"]'
 
     try:
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, seletor_item))
-        )
-        driver.execute_script("window.scrollTo(0, 1000);") 
-        time.sleep(3) 
+        print(f"| ⏳ Aguardando títulos aparecerem no HTML...")
+        if "magazinevoce" in url_lista or "magazineluiza" in url_lista:
+            # ✨ A MÁGICA AQUI: O robô agora é obrigado a esperar o <h2> do título aparecer, e não a caixa vazia!
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="product-title"]'))
+            )
+        else:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, seletor_item))
+            )
     except:
-        print(f"| ⚠️ Timeout. Tentando extrair via HTML bruto ou vitrine vazia...")
+        print(f"| ⚠️ Timeout. O site não carregou os elementos a tempo.")
+    
+    # Damos mais 2 segundinhos só para garantir que os preços também carregaram
+    time.sleep(2)
     
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     itens_lista = soup.select(seletor_item)
     
+    print(f"| 🔍 DEBUG: O robô encontrou {len(itens_lista)} blocos HTML com esse seletor.")
+    
     produtos_encontrados = []
-    for item in itens_lista[:max_list_items]:
+    for index, item in enumerate(itens_lista[:max_list_items]):
+        # 🕵️ DEBUG EXTREMO: Vai imprimir tudo que tiver dentro da primeira caixa
+        if index == 0:
+            texto_bruto = item.get_text(separator=' | ', strip=True)
+            print(f"| 🕵️ RAIO-X DO ITEM 0: {texto_bruto}")
+
         try:
-            # 🔥 O SEGREDO TÁ AQUI: Se o próprio item for o link (a), usa ele. Se não, procura dentro.
+            # --- [NOVA LÓGICA DE PREÇO NA VITRINE] ---
+            preco_num = None
+            if preco_maximo:
+                # Tenta encontrar o preço no bloco de texto (o RAIO-X que você viu)
+                texto_item = item.get_text(" | ", strip=True)
+                # Usa a função que você já tem para converter o texto em número
+                preco_num = extrair_valor_numerico(texto_item)
+
+                if preco_num and preco_num > preco_maximo:
+                    # Se o preço for maior que o limite, ignora o item agora mesmo!
+                    # print(f"| 💸 PNEIRA: Pulando {preco_num} (Limite {preco_maximo})")
+                    continue
+                
             if item.name == 'a' and item.has_attr('href'):
                 link_tag = item
             else:
-                link_tag = item.select_one(seletor_link) if seletor_link else None
-                if not link_tag:
-                    link_tag = item.select_one('a[href]')
+                link_tag = item.select_one('a')
             
             if link_tag and link_tag.get('href'):
                 url_p = link_tag.get('href')
                 url_c = dominio_base + url_p if not url_p.startswith('http') else url_p
                 
-                # Extrai o título (procura h2, h3, ou o data-testid do magalu)
-                tit_tag = item.select_one('h2, h3, [data-testid="product-title"]')
+                titulo = ""
+                
+                # 1. Busca blindada: tenta as tags oficiais da Magalu e KaBuM primeiro
+                tit_tag = item.select_one('[data-testid="product-title"]')
+                
                 if not tit_tag:
-                    # Fallback extremo: pega o texto do próprio card se o título sumir
-                    titulo = item.get_text(strip=True)[:60] + "..." if item.get_text() else "Produto"
-                else:
+                    tit_tag = item.select_one('span.line-clamp-2')
+                    
+                if not tit_tag:
+                    # 2. Tenta achar genéricos, mas PULA a armadilha da "Comissão"
+                    for tag in item.select('h2, h3, .name'):
+                        texto_temp = tag.get_text(strip=True)
+                        if "Comissão" not in texto_temp and len(texto_temp) > 3:
+                            tit_tag = tag
+                            break
+                
+                if tit_tag:
                     titulo = tit_tag.get_text(strip=True)
                 
-                produtos_encontrados.append({'titulo': titulo, 'url': url_c})
-        except Exception as e: 
-            print(f"| ⚠️ Erro ao processar um item específico: {e}")
+                if "Comissão" in titulo:
+                    titulo = titulo.split("Comissão")[0].strip()
+                
+                if not titulo or len(titulo) <= 3:
+                    # Se não tem título nas tags de texto, apela para a imagem
+                    img_tag = item.select_one('img[data-testid="image"], img')
+                    if img_tag:
+                        titulo = img_tag.get('title') or img_tag.get('alt') or ""
+                
+                # 3. Finaliza salvando o produto encontrado
+                if titulo and len(titulo) > 3:
+                    produtos_encontrados.append({'titulo': titulo, 'url': url_c})
+                else:
+                    print(f"| ❌ Item ignorado: Título não encontrado.")
+            else:
+                print(f"| ❌ Item ignorado: Link (href) não encontrado.")
+        except Exception as e:
+            print(f"| ❌ Erro ao extrair dados de um item: {e}")
             continue
         
-    print(f"| ✅ SUCESSO: {len(produtos_encontrados)} produtos identificados.")
+    print(f"| ✅ SUCESSO FINAL: {len(produtos_encontrados)} produtos prontos para a fila de envio.")
     return produtos_encontrados
 
 def rastrear_detalhe_produto(produto, driver, alvo):
@@ -2189,23 +2093,23 @@ def rastrear_detalhe_produto(produto, driver, alvo):
     try:
         driver.get(url_produto)
     except TimeoutException:
-        print(f"[⚠️ TIMEOUT] Produto demorou demais. Pulando.")
-        return produto['titulo'], None, None, None, "", False, 0, 0
-    except Exception as e:
-        print(f"[⚠️ ERRO] Falha ao acessar. Detalhes: {e}")
-        return produto['titulo'], None, None, None, "", False, 0, 0
+        return produto['titulo'], None, None, None, "", False, 0, 0, None, None
+    except Exception:
+        return produto['titulo'], None, None, None, "", False, 0, 0, None, None
 
     titulo_final = "Título Desconhecido"
-    
     try:
+        # Seletor do seu original (Removida a Shopee)
         elemento_titulo = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w, .vR6K3w, #productTitle, div.shopee-product-info__header__title"))
+            EC.presence_of_element_located((By.CSS_SELECTOR, "h1.vR6K3w, .vR6K3w, #productTitle"))
         )
         titulo_final = elemento_titulo.text.strip()
     except:
         titulo_final = produto['titulo']
-            
-    print(f"| Título Confirmado (Prévio): {titulo_final}")
+    
+    # Filtro anti-comissão no detalhe também
+    if "Comissão" in titulo_final:
+        titulo_final = titulo_final.split("Comissão")[0].strip()
 
     try:
         driver.execute_script("window.scrollTo(0, 500);")
@@ -2214,15 +2118,11 @@ def rastrear_detalhe_produto(produto, driver, alvo):
 
     soup_detalhe = BeautifulSoup(driver.page_source, 'html.parser')
 
-    # ==============================================================================
-    # 🔥 CORREÇÃO 1: TÍTULO MAGALU (Ignora "Comissão" e pega o H1 real)
-    # ==============================================================================
+    # CORREÇÃO TÍTULO MAGALU (Sua lógica original)
     if "magazinevoce" in url_produto or "magazineluiza" in url_produto:
         try:
             tit_tag = soup_detalhe.select_one('h1[data-testid="heading-product-title"], h1.header-product__title')
-            if tit_tag:
-                titulo_final = tit_tag.get_text(strip=True)
-                print(f"| ✅ Título Corrigido (Magalu): {titulo_final}")
+            if tit_tag: titulo_final = tit_tag.get_text(strip=True)
         except: pass
 
     preco_atual = None
@@ -2230,222 +2130,77 @@ def rastrear_detalhe_produto(produto, driver, alvo):
 
     try:
         if "amazon" in url_produto:
-            # 1. TENTA OS SELETORES PADRÕES PRIMEIRO
-            seletores_preco = [
-                '.a-price.aok-align-center .a-offscreen', 
-                '#price', '#newBuyBoxPrice', '#kindle-price'
-            ]
-            
+            seletores_preco = ['.a-price.aok-align-center .a-offscreen', '#price', '#newBuyBoxPrice', '#kindle-price']
             for seletor in seletores_preco:
                 elem = soup_detalhe.select_one(seletor)
                 if elem:
                     val = extrair_valor_numerico(elem.get_text())
                     if val and val > 0:
                         preco_atual = val; break
-                    
-            try:
-                # Seleciona as caixinhas do grid (Kindle, Audio, Capa Comum)
-                caixas_formato = soup_detalhe.select('.formatsRow .swatchElement, #tmmSwatches .swatchElement, li.swatchElement')
-                
-                melhor_preco_encontrado = None
-                
-                for caixa in caixas_formato:
-                    texto_caixa = caixa.get_text().lower()
-                    
-                    # Tenta achar o preço dentro da caixinha
-                    elem_preco_box = caixa.select_one('.slot-price, .a-color-price')
-                    if elem_preco_box:
-                        valor_box = extrair_valor_numerico(elem_preco_box.get_text())
-                        
-                        if valor_box and valor_box > 0:
-                            # PRIORIDADE MÁXIMA: Capa Comum ou Dura (Livro Físico)
-                            if "comum" in texto_caixa or "dura" in texto_caixa:
-                                preco_atual = valor_box
-                                print(f"| 📖 Preço Livro Físico encontrado no Grid: R$ {preco_atual}")
-                                break # Achamos o físico, para de procurar e usa esse!
-                            
-                            # Se for Kindle, guarda caso não ache o físico
-                            elif "kindle" in texto_caixa:
-                                melhor_preco_encontrado = valor_box
-
-                # Se saiu do loop e o preco_atual ainda é do Audiobook (0.00) ou nulo,
-                # mas achamos um Kindle ou outro preço válido no grid, usa ele.
-                if (preco_atual is None or preco_atual == 0) and melhor_preco_encontrado:
-                    preco_atual = melhor_preco_encontrado
-
-            except Exception as e:
-                print(f"| Erro ao ler grid de livros: {e}")
-            # -----------------------------------------------------------
-
-            # Tenta achar preço antigo (De: R$...)
-            elem_antigo = soup_detalhe.select_one('span[data-a-strike="true"] .a-offscreen')
-            if not elem_antigo: elem_antigo = soup_detalhe.select_one('#listPrice') # Comum em livros
             
+            elem_antigo = soup_detalhe.select_one('span[data-a-strike="true"] .a-offscreen')
+            if not elem_antigo: elem_antigo = soup_detalhe.select_one('#listPrice')
             if elem_antigo:
                 preco_antigo = extrair_valor_numerico(elem_antigo.get_text())
         else:
-            # --- NOVA LÓGICA MAGALU BLINDADA PARA PREÇOS ---
-            # O robô tenta várias "fantasias" que o preço pode estar usando
-            seletores_preco_magalu = [
-                alvo.get("seletor_preco_detalhe"), # Tenta a regra do dicionário primeiro
-                '[data-testid="price-value"]',     # Pega de qualquer tag (div, p, h4)
-                '.price-template__text',           # Classe alternativa comum
-                'span.price-template__text'
-            ]
-            
-            for sel in seletores_preco_magalu:
+            # Lógica Magalu
+            seletores_magalu = [alvo.get("seletor_preco_detalhe"), '[data-testid="price-value"]', '.price-template__text']
+            for sel in seletores_magalu:
                 if not sel: continue
                 elem_preco = soup_detalhe.select_one(sel)
                 if elem_preco:
                     val = extrair_valor_numerico(elem_preco.get_text())
                     if val and val > 0:
-                        preco_atual = val
-                        break # Achou o preço atual, para de procurar
+                        preco_atual = val; break
 
-            # Tenta achar o Preço Antigo (riscado) com a mesma estratégia
-            seletores_antigo_magalu = [
-                alvo.get("seletor_preco_antigo"),
-                '[data-testid="price-original"]',
-                '.price-template__from',
-                'p[data-testid="price-original"]'
-            ]
-            
-            for sel in seletores_antigo_magalu:
-                if not sel: continue
-                elem_antigo = soup_detalhe.select_one(sel)
-                if elem_antigo:
-                    val_antigo = extrair_valor_numerico(elem_antigo.get_text())
-                    if val_antigo and preco_atual and val_antigo > preco_atual:
-                        preco_antigo = val_antigo
-                        break
-    except Exception: pass
+            elem_antigo = soup_detalhe.select_one('[data-testid="price-original"]')
+            if elem_antigo:
+                preco_antigo = extrair_valor_numerico(elem_antigo.get_text())
+    except: pass
 
-    # ==============================================================================
-    # 📸 EXTRAÇÃO DE IMAGEM EM ALTA DEFINIÇÃO (VERSÃO MESTRE: ML + AMAZON + MAGALU)
-    # ==============================================================================
+    # --- CAPTURA DE IMAGEM BLINDADA (ATUALIZADA) ---
     image_url = None
     try:
-        # 1. TENTA SELETORES GERAIS (AMAZON E OUTROS)
-        img_elem = soup_detalhe.select_one('img#landingImage, img#imgBlkFront, [data-a-image-name="landingImage"], img.ui-pdp-image, .ui-pdp-gallery__figure__image')
-        
+        # 1. Tenta Amazon e Mercado Livre primeiro
+        img_elem = soup_detalhe.select_one('img#landingImage, img#imgBlkFront, [data-a-image-name="landingImage"], img.ui-pdp-image')
         if img_elem:
-            # Pega o melhor atributo disponível
             image_url = img_elem.get('data-zoom') or img_elem.get('data-old-hires') or img_elem.get('src')
-        
-        # 2. FALLBACK PARA MAGAZINE LUIZA
+
+        # 2. Se não achou (Magalu e outros), usa os seletores baseados no seu F12
         if not image_url:
             seletores_magalu = [
-                'img[data-testid="image-selected-thumbnail"]', 
-                'img[data-testid="product-image"]',
-                '[data-testid="image-selected"]', 
-                '.showcase-product__big-img', 
-                'img.main-image'
+                'img[data-testid="image-selected-thumbnail"]', # <-- O alvo exato que você mapeou!
+                'img[data-testid="image-selected"]', 
+                '[data-testid="product-image"] img',
+                '[data-testid="image-gallery"] img',
+                '.showcase-product__big-img'
             ]
-            
-            # ✅ AGORA SIM: O loop roda passando pela variável correta
             for sel in seletores_magalu:
                 f_elem = soup_detalhe.select_one(sel)
-                if f_elem and f_elem.get('src'): # Puxa exatamente o link do src
+                if f_elem and f_elem.get('src'):
                     image_url = f_elem.get('src')
                     break
 
-        # 3. MÁGICA DA LIMPEZA HD
-        if image_url:
-            # --- LIMPEZA AMAZON ---
-            if "amazon.com" in image_url or "media-amazon.com" in image_url:
-                image_url = re.sub(r'\._AC_.*_\.', '.', image_url)
-                image_url = re.sub(r'\._SL.*_\.', '.', image_url)
-                image_url = re.sub(r'\._SR.*_\.', '.', image_url)
-                image_url = re.sub(r'\._SS.*_\.', '.', image_url)
+        # 3. Tratamento vital de URL (Adiciona https: se o Magalu mandar só //)
+        if image_url and image_url.startswith('//'):
+            image_url = 'https:' + image_url
 
-            # --- LIMPEZA MERCADO LIVRE (O segredo do -O.webp) ---
-            elif "mlstatic.com" in image_url:
-                # Transforma qualquer miniatura (-V, -F, -C) no arquivo ORIGINAL (-O)
-                image_url = re.sub(r'-[A-Z]\.(webp|jpg|jpeg|png)$', r'-O.\1', image_url)
-            
-            print(f"| ✨ Imagem capturada: {image_url.split('/')[-1]}")
+        # 4. Tratamento Amazon (Pega a versão em alta resolução)
+        if image_url and "amazon" in image_url:
+            image_url = re.sub(r'\._AC_.*_\.', '.', image_url)
             
     except Exception as e:
-        print(f"| ❌ Erro ao extrair imagem: {e}")
+        print(f"| ⚠️ Erro ao capturar imagem: {e}")
 
-    # --- Nota e Avaliações (Mantida) ---
-    nota_produto = 0.0
-    qtd_avaliacoes = 0
-    try:
-        if "amazon" in url_produto:
-            elem_nota = soup_detalhe.select_one('span[data-hook="rating-out-of-text"]') or soup_detalhe.select_one('i[data-hook="average-star-rating"] span')
-            if elem_nota:
-                match = re.search(r'(\d+\.?\d*)', elem_nota.get_text(strip=True).replace(',', '.'))
-                if match: nota_produto = float(match.group(1))
-            elem_qtd = soup_detalhe.select_one('#acrCustomerReviewText')
-            if elem_qtd:
-                match_q = re.search(r'(\d+)', elem_qtd.get_text(strip=True).replace('.', ''))
-                if match_q: qtd_avaliacoes = int(match_q.group(1))
-        else:
-            elem_nota = soup_detalhe.select_one('[data-testid="review-totalizers-rating"]')
-            if elem_nota:
-                match = re.search(r'(\d+\.?\d*)', elem_nota.get_text(strip=True).replace(',', '.'))
-                if match: nota_produto = float(match.group(1))
-            elem_qtd = soup_detalhe.select_one('[data-testid="review-totalizers-count"]')
-            if elem_qtd:
-                match_q = re.search(r'(\d+)', elem_qtd.get_text(strip=True))
-                if match_q: qtd_avaliacoes = int(match_q.group(1))
-    except: pass
-
-    # --- ATENÇÃO: Desativei o filtro de avaliações para forçar o teste ---
-    eh_relevante = True 
-    
-    # Detecção de Best Seller
-    is_best_seller = False
-    try:
-        if "amazon" in url_produto:
-            if soup_detalhe.select('.a-badge-text') and "mais vendido" in soup_detalhe.select('.a-badge-text')[0].get_text().lower():
-                is_best_seller = True
-        elif soup_detalhe.find(string=re.compile(r"mais vendido", re.IGNORECASE)):
-            is_best_seller = True
-    except: pass
-    
-    if is_best_seller: eh_relevante = True 
-
-    # --- EXTRAÇÃO DE CUPOM (MAGALU) ---
+    # Cupom (Sua lógica original)
     cupom_codigo = None
     try:
-        # Busca exatamente o input que você mapeou no HTML
         elem_cupom = soup_detalhe.select_one('input[data-testid="coupon-code-input"]')
-        if elem_cupom and elem_cupom.get('value'):
-            cupom_codigo = elem_cupom.get('value')
-            print(f"| 🎟️ CUPOM DETECTADO: {cupom_codigo}")
+        if elem_cupom: cupom_codigo = elem_cupom.get('value')
     except: pass
 
-    # --- EXTRAÇÃO DE AUTOR (AMAZON LIVROS) ---
-    nome_autor = ""
-    try:
-        if "amazon" in url_produto:
-            # Pega todas as caixinhas de autores/tradutores
-            autores_spans = soup_detalhe.select('#bylineInfo .author.notFaded')
-            for span in autores_spans:
-                # Verifica se a contribuição diz "Autor"
-                contribuicao = span.select_one('.contribution')
-                if contribuicao and 'autor' in contribuicao.get_text().lower():
-                    link_autor = span.select_one('a')
-                    if link_autor:
-                        nome_autor = link_autor.get_text(strip=True)
-                        print(f"| ✍️ Autor detectado: {nome_autor}")
-                        break # Achou o autor principal, pode parar
-    except Exception as e:
-        pass
-
-    # --- BLOCO DE DEBUG (MANTENHA ISSO ATÉ FUNCIONAR) ---
-    print(f"| 🕵️ DEBUG DO PRODUTO: {titulo_final[:30]}...")
-    print(f"|    > Preço Atual: {preco_atual}")
-    print(f"|    > Imagem URL: {image_url}")
-    print(f"|    > Avaliações: {qtd_avaliacoes} (Relevante? {eh_relevante})")
-    if cupom_codigo:
-        print(f"|    > Cupom: {cupom_codigo}")
-    # ----------------------------------------------------
-
-    # ❌ APAGUE A LINHA DE RETURN ANTIGA E COLOQUE ESSA (agora passando o cupom_codigo):
-    return titulo_final, preco_atual, preco_antigo, image_url, nome_autor, eh_relevante, nota_produto, qtd_avaliacoes, cupom_codigo, None
+    # ✅ RETORNO DE 10 VALORES (Obrigatório para o main novo)
+    return titulo_final, preco_atual, preco_antigo, image_url, "", True, 0.0, 0, cupom_codigo, None
 
 def rastrear_cupons(url_cupons, driver):
     """
@@ -2642,155 +2397,215 @@ def limpar_interface_whatsapp(driver):
             
     except: pass
 
+# =========================================================
+# CONTROLE DE DUPLICIDADE (CACHE) - arquivo definido no topo via ARQUIVO_CACHE_ENVIOS
+# =========================================================
+
+
+# =========================================================
+# FUNÇÕES PRINCIPAIS DE ENVIO (DETERMINAM TIPO DINAMICAMENTE)
+# =========================================================
+
 def enviar_whatsapp(driver, nome_grupo, mensagem):
-    print(f"| 🟢 WHATSAPP: Enviando para o grupo '{nome_grupo}'...")
-    
-    # --- TROCA PARA A ABA DO WHATSAPP SE NECESSÁRIO ---
+    """Envia mensagem de texto simples para um Grupo ou Canal."""
+    eh_canal = nome_grupo.startswith("[CANAL]")
+    nome_final_chat = nome_grupo.replace("[CANAL]", "").strip()
+
+    if eh_canal:
+        # Se é canal, use a função dedicada de canais
+        sucesso = enviar_canal_exclusivo(driver, nome_final_chat, mensagem)
+        if sucesso:
+            print(f"| ✅ Canal enviado com sucesso!")
+        else:
+            print(f"| ⚠️ Canal falhou, mas tentou voltar para Conversas")
+        return sucesso
+
+    # Se é grupo, use o fluxo de envio em grupos
+    tipo_log = "WHATSAPP"
+    print(f"| 🟢 {tipo_log}: Iniciando envio (Sem Foto) para '{nome_final_chat}'...")
+
+    aba_origem = driver.current_window_handle
+
     if not focar_aba_whatsapp(driver):
         return
 
-    limpar_interface_whatsapp(driver) # PREVENÇÃO
+    limpar_interface_whatsapp(driver)
 
     try:
-        search_box = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, '//div[@contenteditable="true"][@data-tab="3"]'))
+        # Procura e abre o grupo pelo nome
+        xpath_pesquisa = '//input[@role="textbox"][@aria-label="Pesquisar ou começar uma nova conversa"]'
+        caixa_pesquisa = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, xpath_pesquisa))
         )
-        
-        search_box.click()
-        search_box.send_keys(Keys.CONTROL + "a")
-        search_box.send_keys(Keys.BACKSPACE)
-        search_box.send_keys(nome_grupo)
-        time.sleep(2)
-        search_box.send_keys(Keys.ENTER)
-        time.sleep(2)
+        caixa_pesquisa.click()
+        time.sleep(0.5)
+        caixa_pesquisa.send_keys(Keys.CONTROL + "a")
+        caixa_pesquisa.send_keys(Keys.BACKSPACE)
+        caixa_pesquisa.send_keys(nome_final_chat)
+        print(f"| ✍️ Procurando grupo: '{nome_final_chat}'")
+        time.sleep(2.5)
 
-        msg_box = driver.find_element(By.XPATH, '//div[@contenteditable="true"][@data-tab="10"]')
-        
-        # LIMPEZA E FOCO
+        # Clica no primeiro resultado - com melhor tratamento
+        try:
+            primeiro_resultado = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, '//div[@role="listitem"][1]'))
+            )
+            driver.execute_script("arguments[0].click();", primeiro_resultado)
+            print(f"| ✅ Grupo aberto pelo resultado da busca")
+        except:
+            print(f"| ⚠️ Tentando Enter para abrir grupo...")
+            caixa_pesquisa.send_keys(Keys.ENTER)
+
+        time.sleep(3)  # Aguarda o chat carregar
+
+        # Foca na caixa de texto do chat
+        xpath_caixa_texto = '//div[@id="main"]//div[@contenteditable="true"]'
+        msg_box = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.XPATH, xpath_caixa_texto))
+        )
+
         msg_box.click()
+        time.sleep(0.5)
         msg_box.send_keys(Keys.CONTROL + "a")
         msg_box.send_keys(Keys.BACKSPACE)
-        human_delay(1, 2) # Pausa antes de começar a 'digitar'
 
-        # Formata a mensagem para o padrão WhatsApp
+        print("| ⏳ Passo 4: Colando a mensagem...")
         msg_final = formatar_para_whatsapp(mensagem)
-        
         simular_digitacao(driver, msg_box, msg_final)
-        
+
         print("| ⏳ Aguardando 5 segundos para o WhatsApp gerar o Link Preview...")
-        time.sleep(5) # <--- NOVO TEMPO DE ESPERA OBRIGATÓRIO
+        time.sleep(5)
 
         msg_box.send_keys(Keys.ENTER)
-        
-        print(f"| ✅ WHATSAPP: Mensagem enviada com sucesso!")
-        human_delay(2, 5) # Delay pós-envio
+        print(f"| ✅ {tipo_log}: Mensagem enviada com sucesso!")
+        human_delay(2, 5)
+        return True
 
     except Exception as e:
-        print(f"| ❌ WHATSAPP: Falha ao enviar para o grupo: {e}")
-    
+        print(f"| ❌ {tipo_log}: Erro ao enviar mensagem: {e}")
+        return False
+
     finally:
-        limpar_interface_whatsapp(driver) # GARANTIA PARA O PRÓXIMO
+        limpar_interface_whatsapp(driver)
+        # NÃO volta para aba original aqui - deixa no WhatsApp para o próximo grupo/canal
+
 
 def enviar_whatsapp_robusto(driver, nome_grupo, mensagem, caminho_imagem):
-    print(f"| 📸 WHATSAPP: Iniciando entrega para '{nome_grupo}'...")
-    wait = WebDriverWait(driver, 40)
-    
+    """Envia imagem com legenda para um Grupo ou Canal."""
+    eh_canal = nome_grupo.startswith("[CANAL]")
+    nome_final_chat = nome_grupo.replace("[CANAL]", "").strip()
+
+    if eh_canal:
+        # Se é canal, use a função dedicada de canais
+        sucesso = enviar_canal_exclusivo(driver, nome_final_chat, mensagem, caminho_imagem)
+        if sucesso:
+            print(f"| ✅ Canal com foto enviado com sucesso!")
+        else:
+            print(f"| ⚠️ Canal com foto falhou, mas tentou voltar para Conversas")
+        return sucesso
+
+    # Se é grupo, use o fluxo de envio com foto em grupos
+    tipo_log = "WHATSAPP"
+    print(f"| 📸 {tipo_log}: Iniciando entrega com foto para '{nome_final_chat}'...")
+
     aba_origem = driver.current_window_handle
-    
-    # --- TROCA PARA A ABA DO WHATSAPP SE NECESSÁRIO ---
+
     if not focar_aba_whatsapp(driver):
         return
 
     try:
-        limpar_interface_whatsapp(driver) # PREVENÇÃO
+        # Procura e abre o grupo pelo nome
+        xpath_pesquisa = '//input[@role="textbox"][@aria-label="Pesquisar ou começar uma nova conversa"]'
+        caixa_pesquisa = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, xpath_pesquisa))
+        )
+        caixa_pesquisa.click()
+        time.sleep(0.5)
+        caixa_pesquisa.send_keys(Keys.CONTROL + "a")
+        caixa_pesquisa.send_keys(Keys.BACKSPACE)
+        caixa_pesquisa.send_keys(nome_final_chat)
+        print(f"| ✍️ Procurando grupo: '{nome_final_chat}'")
+        time.sleep(2.5)
 
-        search_box = wait.until(EC.presence_of_element_located((By.XPATH, '//div[@contenteditable="true"][@data-tab="3"]')))
-        search_box.click()
-        search_box.send_keys(Keys.CONTROL + "a")
-        search_box.send_keys(Keys.BACKSPACE)
-        search_box.send_keys(nome_grupo)
-        time.sleep(2)
-        search_box.send_keys(Keys.ENTER)
-        time.sleep(2)
+        # Clica no primeiro resultado - com melhor tratamento
+        try:
+            primeiro_resultado = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, '//div[@role="listitem"][1]'))
+            )
+            driver.execute_script("arguments[0].click();", primeiro_resultado)
+            print(f"| ✅ Grupo aberto pelo resultado da busca")
+        except:
+            print(f"| ⚠️ Tentando Enter para abrir grupo...")
+            caixa_pesquisa.send_keys(Keys.ENTER)
 
+        time.sleep(3)  # Aguarda o chat carregar
+
+        # Cola a imagem do Clipboard
         copiar_imagem_para_clipboard(caminho_imagem)
-        chat_box = wait.until(EC.presence_of_element_located((By.XPATH, '//div[@contenteditable="true"][@data-tab="10"]')))
-        chat_box.click()
-        # GARANTE QUE NÃO TEM TEXTO PENDENTE
-        chat_box.send_keys(Keys.CONTROL + "a")
-        chat_box.send_keys(Keys.BACKSPACE)
-        time.sleep(1)
-        
         ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
 
         print("| ⏳ Aguardando editor de legenda...")
-        
-        # O problema anterior era que ele achava o chat (tab=10) como legenda.
-        # Agora o seletor obriga a ser 'Adicionar legenda' OU ter um aria-label que contenha 'legenda'
-        # E EXCLUI explicitamente o data-tab=10
-        xpath_legenda = '//div[@aria-label="Adicionar legenda"] | //div[contains(@aria-label, "legenda")] | //span[text()="Adicionar legenda"]/../following-sibling::div//div[@contenteditable="true"]'
-        
-        try:
-            legenda_box = WebDriverWait(driver, 10).until(
-                EC.visibility_of_element_located((By.XPATH, xpath_legenda))
-            )
+        time.sleep(3)  # Tempo maior para o modal carregar
 
-            # Validação extra: Se o elemento achado for o chat principal, espera mais um pouco
-            if legenda_box.get_attribute("data-tab") == "10":
-                 print("| ⚠️ Alerta: Seletor pegou o chat principal. Aguardando modal real...")
-                 time.sleep(2)
-                 legenda_box = driver.find_element(By.XPATH, xpath_legenda)
+        # Múltiplos seletores para encontrar o campo de legenda
+        xpath_legenda_opcoes = [
+            '//div[@aria-label="Adicionar legenda"]',
+            '//div[contains(@aria-label, "legenda")]',
+            '//span[text()="Adicionar legenda"]/../following-sibling::div//div[@contenteditable="true"]',
+            '//div[@role="dialog"]//div[@contenteditable="true"]',
+            '//div[contains(@class, "modal")]//div[@contenteditable="true"]',
+            '//div[@data-testid="chat-input"]//div[@contenteditable="true"]',
+            '//div[@role="textbox"][@contenteditable="true"]',
+            '//div[@id="main"]//div[@contenteditable="true"]'
+        ]
 
-        except:
-             print("| ⚠️ Modal de legenda não identificado pelo nome padrão. Tentando estratégia de focar no elemento ativo...")
-             time.sleep(2)
-             legenda_box = driver.switch_to.active_element
-        
+        legenda_box = None
+        for xpath in xpath_legenda_opcoes:
+            try:
+                legenda_box = WebDriverWait(driver, 3).until(
+                    EC.presence_of_element_located((By.XPATH, xpath))
+                )
+                print(f"| ✅ Campo de legenda encontrado com seletor: {xpath[:50]}...")
+                break
+            except:
+                continue
+
+        if not legenda_box:
+            print("| ⚠️ Campo de legenda não encontrado, tentando element ativo...")
+            time.sleep(1)
+            legenda_box = driver.switch_to.active_element
+            if not legenda_box or legenda_box.tag_name == "body":
+                raise Exception("Campo de legenda não encontrado e elemento ativo é inválido")
+
         driver.execute_script("arguments[0].focus();", legenda_box)
         time.sleep(0.5)
-        
-        # LIMPEZA DA LEGENDA ANTES DE COLAR
+
         legenda_box.send_keys(Keys.CONTROL + "a")
         legenda_box.send_keys(Keys.BACKSPACE)
         time.sleep(0.5)
 
-        # Formata a mensagem
         msg_final = formatar_para_whatsapp(mensagem)
         pyperclip.copy(msg_final)
-        
         ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
-        
-        human_delay(1, 3)
 
-        print("| 🚀 Disparando o ENVIO...")
-        
-        # Tenta dar Enter primeiro
+        human_delay(1, 3)
+        print(f"| 🚀 Disparando o ENVIO para o {tipo_log}...")
+
         try:
             legenda_box.send_keys(Keys.ENTER)
             human_delay(1, 2)
         except: pass
-        
-        # Se ainda estiver na tela de imagem (botão enviar ainda lá), tenta clicar no botão
-        try:
-            # Lista de seletores possíveis para o botão de enviar (inclui data-icon, aria-label e spans)
-            seletores_enviar = [
-                '//div[@aria-label="Enviar"]',
-                '//span[@data-icon="send"]',
-                '//button[contains(@aria-label, "Enviar")]',
-                '//span[@data-icon="send-light"]/..'
-            ]
-            
-            for seletor in seletores_enviar:
-                botoes = driver.find_elements(By.XPATH, seletor)
-                if botoes:
-                    print(f"| 🎯 Botão 'Enviar' encontrado ({seletor})! Clicando...")
-                    driver.execute_script("arguments[0].click();", botoes[0])
-                    time.sleep(1)
-                    break 
-        except Exception as e:
-            print(f"| ⚠️ Falha ao clicar no botão físico: {e}")
 
-        # Verificação final: se o modal de imagem ainda estiver aberto, tenta um Enter forçado
+        # Cliques físicos de garantia
+        seletores_enviar = ['//div[@aria-label="Enviar"]', '//span[@data-icon="send"]', '//button[contains(@aria-label, "Enviar")]', '//span[@data-icon="send-light"]/..']
+        for seletor in seletores_enviar:
+            botoes = driver.find_elements(By.XPATH, seletor)
+            if botoes:
+                print(f"| 🎯 Botão 'Enviar' encontrado ({seletor})! Clicando...")
+                driver.execute_script("arguments[0].click();", botoes[0])
+                time.sleep(1)
+                break
+
         try:
             modal_aberto = driver.find_elements(By.XPATH, '//span[@data-icon="x-viewer"]')
             if modal_aberto:
@@ -2798,32 +2613,22 @@ def enviar_whatsapp_robusto(driver, nome_grupo, mensagem, caminho_imagem):
                 driver.switch_to.active_element.send_keys(Keys.ENTER)
         except: pass
 
-        time.sleep(2) # Espera técnica para o envio iniciar
-        print("| ✅ WHATSAPP: Missão cumprida!")
+        time.sleep(2)
+        print(f"| ✅ {tipo_log}: Missão cumprida!")
+        return True
 
     except Exception as e:
-        print(f"| ❌ WHATSAPP: Erro no envio: {e}")
-        # Tenta fechar o modal de imagem se estiver aberto (botão X)
+        print(f"| ❌ {tipo_log}: Erro no envio robusto: {e}")
         try:
             botao_fechar = driver.find_element(By.XPATH, '//span[@data-icon="x-viewer"]')
             botao_fechar.click()
         except: pass
-    
+        return False
+
     finally:
-        limpar_interface_whatsapp(driver) # GARANTIA DE LIMPEZA
-        
-        # Volta para a aba que estava antes de tentar enviar (para não quebrar o fluxo principal)
-        try:
-            driver.switch_to.window(aba_origem)
-        except: pass
-        print("| 🔄 Voltando para o rastreio...")
-
-# =========================================================
-# CONTROLE DE DUPLICIDADE (CACHE 24H - VERSÃO BLINDADA)
-# =========================================================
-ARQUIVO_CACHE_ENVIOS = "cache_envios_24h.json"
-
-
+        limpar_interface_whatsapp(driver)
+        # NÃO volta para aba original aqui - deixa no WhatsApp para o próximo grupo/canal
+        # driver.switch_to.window(aba_origem)  # ← Removido para manter na aba do WhatsApp
 
 def normalizar_texto(texto):
     """LIMPEZA PROFUNDA: Remove espaços, pontuação e converte para minúsculo."""
@@ -2834,7 +2639,7 @@ def normalizar_texto(texto):
 
 def verificar_se_ja_enviou_24h(titulo, grupo=None):
     """
-    Retorna True se o produto já foi enviado nas últimas 24h.
+    Retorna True se o produto já foi enviado nas últimas N segundos (CACHE_RETENCAO_SECONDS).
     Se 'grupo' for informado, verifica POR GRUPO (permite repetir em outro grupo).
     """
     titulo_chave = normalizar_texto(titulo)
@@ -2848,8 +2653,8 @@ def verificar_se_ja_enviou_24h(titulo, grupo=None):
     timestamp_envio = cache[titulo_chave]
     agora = time.time()
     
-    if (agora - timestamp_envio) < 172800:
-        horas_restantes = (172800 - (agora - timestamp_envio)) / 3600
+    if (agora - timestamp_envio) < CACHE_RETENCAO_SECONDS:
+        horas_restantes = (CACHE_RETENCAO_SECONDS - (agora - timestamp_envio)) / 3600
         print(f"| ⏳ CACHE: '{titulo[:20]}...' bloqueado por mais {horas_restantes:.1f}h.")
         return True
     else:
@@ -2857,12 +2662,35 @@ def verificar_se_ja_enviou_24h(titulo, grupo=None):
         salvar_cache(cache)
         return False
 
-def registrar_envio_24h(titulo, grupo=None):
+def registrar_envio_24h(titulo, grupo=None, url=None):
+    """Registra no cache tanto pelo título quanto (opcional) pela URL do produto.
+
+    Isso permite pular itens futuros com base na URL/ID sem abrir o produto.
+    """
+    def _salvar_chave(chave, cache):
+        cache[chave] = time.time()
+
+    cache = carregar_cache()
+
+    # Salva chave baseada no título
     titulo_chave = normalizar_texto(titulo)
     if grupo:
         titulo_chave = f"{grupo}::{titulo_chave}"
-    cache = carregar_cache()
-    cache[titulo_chave] = time.time()
+    _salvar_chave(titulo_chave, cache)
+
+    # Se fornecer URL, também salva uma chave baseada na URL limpa (sem query)
+    if url:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            cleaned = parsed._replace(query="").geturl()
+            chave_url = normalizar_texto(cleaned)
+            if grupo:
+                chave_url = f"{grupo}::{chave_url}"
+            _salvar_chave(chave_url, cache)
+            print(f"| 💾 MEMÓRIA: URL também salva no cache: {cleaned}")
+        except Exception:
+            pass
+
     salvar_cache(cache)
     print(f"| 💾 MEMÓRIA: '{titulo[:20]}...' salvo no cache.")
 
@@ -2886,31 +2714,27 @@ def main(alvos_a_rodar, preco_maximo=None):
 
     driver = iniciar_driver()
     
-    # --- CORREÇÃO: SEPARAÇÃO BLINDADA DE ABAS ---
-    aba_whatsapp = None
+    # --- CORREÇÃO: SEPARAÇÃO BLINDADA DE ABAS (ATUALIZADO) ---
+    aba_whatsapp = focar_aba_whatsapp(driver)
     
-    # 1. Primeiro, caça o WhatsApp em todas as abas abertas
-    if focar_aba_whatsapp(driver):
-        aba_whatsapp = driver.current_window_handle
-        print("| ✅ WhatsApp isolado com segurança.")
+    if aba_whatsapp:
+        print("| ✅ WhatsApp isolado e mapeado com segurança.")
     else:
-        print("| ⚠️ WhatsApp não detectado nas abas iniciais.")
+        print("| ⚠️ Falha crítica ao mapear ou abrir o WhatsApp.")
 
     # 2. Garante que a aba de trabalho (vitrine) NÃO é o WhatsApp
-    # Se a aba atual for o Zap, o robô cria uma aba nova em branco só pra ele.
     if driver.current_window_handle == aba_whatsapp:
         print("| 🔄 Criando aba exclusiva para caçar ofertas...")
         driver.execute_script("window.open('about:blank', '_blank');")
         driver.switch_to.window(driver.window_handles[-1])
         
-    # Agora sim, define a aba de navegação com 100% de certeza que não vai esmagar o Zap
     aba_navegacao = driver.current_window_handle 
-    # ----------------------------------------------
+    # ---------------------------------------------------------
 
     CATEGORIAS_ALERTADAS = set()
     PRODUTOS_PROCESSADOS_HOJE = set() 
 
-    try: # Este é o try da linha 2462
+    try: 
         # CABEÇALHO DO TURNO RELÂMPAGO
         if preco_maximo:
             CABECALHOS_RELAMPAGO = {
@@ -2923,8 +2747,17 @@ def main(alvos_a_rodar, preco_maximo=None):
                 f"⚡ <b>TURNO RELÂMPAGO: TUDO ATÉ R${preco_maximo:.0f}!</b>\n🏷️ Ofertas selecionadas só pra você 👇"
             )
             enviar_telegram(msg_relampago, None, None)
+            
+            # CORREÇÃO: Cabeçalho relâmpago com tratamento de nomes limpos para o WhatsApp
             for grupo in GRUPOS_ALVO:
-                try: enviar_whatsapp(driver, grupo, msg_relampago)
+                try: 
+                    eh_canal_inicial = grupo.startswith("[CANAL]")
+                    nome_limpo_inicial = grupo.replace("[CANAL]", "").strip() if eh_canal_inicial else grupo.strip()
+                    
+                    if eh_canal_inicial:
+                        enviar_canal_exclusivo(driver, nome_limpo_inicial, msg_relampago, None)
+                    else:
+                        enviar_whatsapp(driver, nome_limpo_inicial, msg_relampago)
                 except: pass
             time.sleep(2)
 
@@ -2935,24 +2768,17 @@ def main(alvos_a_rodar, preco_maximo=None):
                 print(f"| ⏭️ SKIPPED: Categoria '{categoria_atual}' ignorada.")
                 continue
 
-            # 👇 BLOQUEIO TEMPORÁRIO DO MAGALU 👇
-            if "magazinevoce" in alvo.get("url_lista", "") or "magazineluiza" in alvo.get("dominio_base", ""):
-                print(f"| ⏭️ PULEI: Loja '{alvo['nome']}' ignorada temporariamente (Erro de Login).")
-                continue
-            # 👆 FIM DO BLOQUEIO 👆
-
-            try: driver.switch_to.window(aba_navegacao)
-            except: pass
-            
             try: driver.switch_to.window(aba_navegacao)
             except: pass
 
             if alvo.get("loja") == "MERCADOLIVRE":
                 processar_feed_mercadolivre(driver, alvo, PRODUTOS_PROCESSADOS_HOJE, preco_maximo=preco_maximo)
-                continue 
-            if alvo.get("loja") == "SHOPEE":
-                processar_painel_shopee(driver, PRODUTOS_PROCESSADOS_HOJE, preco_maximo=preco_maximo)
                 continue
+            
+            # TODO: Adicionar raspagem da Shopee aqui
+            # Quando integrado, usar estrutura similar ao ML com extração de preço, título e link de afiliado
+            # Link modelo: https://shopee.com.br/search?keyword=...&data=produtos
+            # Afiliado: usar shope.ee ou link universal da Shopee
             
             nome_categoria = alvo['categoria']
             print(f"\n======== {alvo['nome']} ({nome_categoria}) ========")
@@ -2978,7 +2804,6 @@ def main(alvos_a_rodar, preco_maximo=None):
             
             print(f"| ENCONTRADOS: {len(ofertas_unicas)} itens únicos.")
 
-            # --- NOVO LOOP INTELIGENTE (AGORA DENTRO DO FOR DE LOJAS) ---
             PRODUTOS_VALIDOS = 0
             INDICE = 0
             
@@ -2987,14 +2812,9 @@ def main(alvos_a_rodar, preco_maximo=None):
                 produto = ofertas_unicas[INDICE]
                 INDICE += 1
 
-                # Filtro de cache rápido por grupo
-                ja_enviado_em_todos = True
-                for grupo in GRUPOS_ALVO:
-                    if not verificar_se_ja_enviou_24h(produto['titulo'], grupo):
-                        ja_enviado_em_todos = False
-                        break
-                
-                if ja_enviado_em_todos:
+                # Filtro de cache rápido (Verifica apenas no grupo principal para ver se o item é novo)
+                grupo_principal = GRUPOS_ALVO[0].replace("[CANAL]", "").strip()
+                if verificar_se_ja_enviou_24h(produto['titulo'], grupo_principal):
                     print(f"| ⏭️ PANTALHA: '{produto['titulo'][:25]}...' já enviado. Próximo...")
                     continue
 
@@ -3013,6 +2833,8 @@ def main(alvos_a_rodar, preco_maximo=None):
                 elif alvo.get("loja") == "MAGALU" or "magazine" in alvo.get("url_lista", ""):
                     url_final = gerar_link_magalu_oficial(driver)
                     if not url_final: url_final = gerar_link_afiliado(produto['url'], "MAGALU")
+                elif alvo.get("loja") in ["KABUM", "ALIEXPRESS"]:
+                    url_final = gerar_link_afiliado(produto['url'], alvo.get("loja"))
                 else:
                     url_final = gerar_link_afiliado(produto['url'], "MAGALU")
 
@@ -3022,22 +2844,13 @@ def main(alvos_a_rodar, preco_maximo=None):
                 if preco_maximo and preco_atual > preco_maximo:
                     continue
 
-                # ==========================================================
-                # SUBSTITUA A PARTIR DAQUI: Montagem e envio da mensagem
-                # ==========================================================
-                
-                # 1. Chama a inteligência de Copy!
+                # Montagem e envio da mensagem
                 chamada = gerar_chamada_inteligente(titulo, preco_atual, alvo.get("categoria", ""), nome_autor)
-
-                # 🌟 NOVO: ATIVANDO O CÉREBRO DO HISTÓRICO DE PREÇOS
                 oportunidade, veredito, menor_preco = analisar_historico(ARQUIVO_HISTORICO, titulo, preco_atual, preco_antigo)
                 atualizar_historico(ARQUIVO_HISTORICO, titulo, preco_atual)
 
-                # 2. Monta o layout limpo e convertido para o seu padrão HTML
                 mensagem_final = f"<b>{chamada}</b>\n\n"
 
-
-                # Se a análise identificou que o preço tá absurdamente bom, grita no grupo!
                 if oportunidade:
                     mensagem_final += f"🚨 <b>{veredito}</b> 🚨\n\n"
                     
@@ -3053,7 +2866,6 @@ def main(alvos_a_rodar, preco_maximo=None):
                 if nota > 0:
                     mensagem_final += f"⭐ <b>Avaliação:</b> {nota}/5.0\n"
 
-                # ✅ NOVO: Se o robô encontrou um cupom, adiciona com destaque!
                 if cupom_cod:
                     mensagem_final += f"\n🎟️ <b>Use o cupom: {cupom_cod}</b>\n"
 
@@ -3064,45 +2876,123 @@ def main(alvos_a_rodar, preco_maximo=None):
                 
                 teve_envio_real = False
                 
-                # 2. Tenta baixar a foto (se o Magalu tiver deixado a URL disponível)
+                # 2. Tenta baixar a foto
                 caminho_foto = None
                 if image_url:
                     caminho_foto = baixar_imagem_temporaria(image_url)
 
                 try:
-                    for grupo in GRUPOS_ALVO:
-                        if not verificar_se_ja_enviou_24h(titulo, grupo):
+                    # ASSEGURA QUE O ROBÔ VOLTOU PARA A ABA DO WHATSAPP
+                    whatsapp_encontrado = False
+                    for handle in driver.window_handles:
+                        try:
+                            driver.switch_to.window(handle)
+                            if "whatsapp" in driver.title.lower() or "web.whatsapp" in driver.current_url:
+                                whatsapp_encontrado = True
+                                aba_whatsapp = handle
+                                break
+                        except:
+                            continue
+                    
+                    if not whatsapp_encontrado:
+                        print(f"| ⚠️ Alerta: Não consegui pular para a aba do WhatsApp.")
+                        continue
+                    
+                    # ==========================================================
+                    # 🚀 ETAPA 1: ENVIO OBRIGATÓRIO PARA O GRUPO TRADICIONAL
+                    # ==========================================================
+                    nome_grupo_tradicional = "Achadinhos da Celle • AI"
+                    sucesso_grupo = False
+                    
+                    try:
+                        print("| 🔄 Garantindo foco na aba de Conversas normais...")
+                        xpath_aba_conversas = '//*[local-name()="title" and contains(text(), "wds-ic-chat")]/ancestor::button | //*[local-name()="title" and contains(text(), "wds-ic-chat")]/ancestor::span'
+                        botao_conversas = WebDriverWait(driver, 12).until(
+                            EC.presence_of_element_located((By.XPATH, xpath_aba_conversas))
+                        )
+                        driver.execute_script("arguments[0].click();", botao_conversas)
+                        time.sleep(2)
+
+                        print(f"| 🔍 Buscando na lista de chats o grupo: '{nome_grupo_tradicional}'...")
+                        
+                        xpath_caixa_busca = '//input[@role="textbox"][@aria-label="Pesquisar ou começar uma nova conversa"] | //input[@data-tab="3"]'
+                        caixa_busca = WebDriverWait(driver, 12).until(
+                            EC.presence_of_element_located((By.XPATH, xpath_caixa_busca))
+                        )
+                        caixa_busca.click()
+                        time.sleep(0.5)
+                        
+                        caixa_busca.send_keys(Keys.CONTROL + "a")
+                        caixa_busca.send_keys(Keys.BACKSPACE)
+                        caixa_busca.send_keys(nome_grupo_tradicional)
+                        time.sleep(2)
+                        
+                        caixa_busca.send_keys(Keys.ENTER)
+                        print("| ⌨️ Pressionado ENTER para abrir o grupo.")
+                        time.sleep(3)
+                        
+                        xpath_caixa_texto = '//div[@id="main"]//div[@contenteditable="true"] | //footer//div[@contenteditable="true"]'
+                        msg_box = WebDriverWait(driver, 12).until(
+                            EC.presence_of_element_located((By.XPATH, xpath_caixa_texto))
+                        )
+                        msg_box.click()
+                        time.sleep(0.5)
+
+                        if caminho_foto and os.path.exists(caminho_foto):
+                            print("| 📸 Preparando imagem e jogando para a Área de Transferência...")
+                            copiar_imagem_para_clipboard(caminho_foto) 
+                            time.sleep(1)
                             
-                            # O Pulo do Gato para imagens ausentes:
-                            if caminho_foto:
-                                enviar_whatsapp_robusto(driver, grupo, mensagem_final, caminho_foto)
-                            else:
-                                # Se não tem imagem, manda só o texto e o link (o zap puxa a capa)
-                                enviar_whatsapp(driver, grupo, mensagem_final)
-                                
-                            registrar_envio_24h(titulo, grupo)
-                            teve_envio_real = True
+                            msg_box.send_keys(Keys.CONTROL + "v")
+                            print("| 📋 Imagem colada no container do grupo!")
+                            time.sleep(3.5)
                             
-                            # Pausa essencial para não ser banido pelo WhatsApp
-                            human_delay(DELAY_MIN_ENTRE_MENSAGENS, DELAY_MAX_ENTRE_MENSAGENS)
-                            
+                            xpath_legenda = '//div[contains(@class, "lexical-rich-text-input")]//div[@contenteditable="true"]'
+                            msg_box = WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.XPATH, xpath_legenda))
+                            )
+                            msg_box.click()
+
+                        msg_final_whats = formatar_para_whatsapp(mensagem_final)
+                        simular_digitacao(driver, msg_box, msg_final_whats)
+                        time.sleep(1.5)
+                        
+                        msg_box.send_keys(Keys.ENTER)
+                        print(f"| 🚀 Sucesso! Oferta enviada para o grupo: '{nome_grupo_tradicional}'")
+                        sucesso_grupo = True
+                        teve_envio_real = True
+                        time.sleep(3)
+                        
+                    except Exception as e_txt:
+                        print(f"| ❌ Erro ao processar envio para o grupo: {e_txt}")
+                        sucesso_grupo = False
+
+                    # ==========================================================
+                    # 📢 ETAPA 2: ENVIO IMEDIATO PARA O CANAL (LOGO EM SEGUIDA!)
+                    # ==========================================================
+                    if sucesso_grupo:
+                        print("| 📢 Acionando gatilho imediato para o Canal da Celle...")
+                        # Dispara a função do canal que criamos
+                        enviar_canal_exclusivo(driver, nome_grupo_tradicional, mensagem_final, caminho_foto)
+                        
+                        # Salva o produto na memória para não repetir (inclui link final quando possível)
+                        try:
+                            registrar_envio_24h(titulo, nome_grupo_tradicional, url=url_final)
+                        except Exception:
+                            registrar_envio_24h(titulo, nome_grupo_tradicional)
+                        human_delay(DELAY_MIN_ENTRE_MENSAGENS, DELAY_MAX_ENTRE_MENSAGENS)
+                                    
                     if teve_envio_real:
                         PRODUTOS_VALIDOS += 1
                         print(f"| ✅ Sucesso ({alvo['nome']}): {PRODUTOS_VALIDOS}/5")
                 finally:
-                    # Limpa o PC
+                    # Limpa arquivos residuais temporários
                     if caminho_foto and os.path.exists(caminho_foto):
                         try: os.remove(caminho_foto)
                         except: pass
-                    # Volta o foco para a vitrine para caçar o próximo
-                    driver.switch_to.window(aba_navegacao)
-
-                # ==========================================================
-                # FIM DA SUBSTITUIÇÃO (Aqui embaixo já fica o FIM DO LOOP 'for alvo')
-                # ==========================================================
-
-        # FIM DO LOOP 'for alvo in alvos_a_rodar'
-        # O recuo aqui deve ser o mesmo do 'try' da linha 2462
+                    # Retorna o foco do driver para a aba de ofertas
+                    try: driver.switch_to.window(aba_navegacao)
+                    except: pass
 
     except Exception as e:
         print(f"| ❌ Erro Crítico no processamento geral: {e}")
@@ -3113,14 +3003,10 @@ def main(alvos_a_rodar, preco_maximo=None):
 if __name__ == "__main__":
 
     try:
-        # Tenta pegar o argumento digitado (ex: python script.py TODOS)
         ARGUMENTO_PRINCIPAL = sys.argv[1]
     except IndexError:
-        # --- MUDANÇA ESTRATÉGICA: O PADRÃO AGORA É FEMININO ---
-        # Se você só clicar no arquivo, ele vai rodar o modo "MULHER"
         ARGUMENTO_PRINCIPAL = "MULHER" 
     
-    # --- MODO CUPONS (Mantido intacto) ---
     if ARGUMENTO_PRINCIPAL == "--cupons":
         URL_CUPONS = 'https://especiais.magazineluiza.com.br/magazinevoce/cupons/?showcase=magazinecelle'
         print(f"\n| === MODO CUPONS AGENDADO: {time.strftime('%H:%M:%S')} === |")
@@ -3131,173 +3017,77 @@ if __name__ == "__main__":
             lista_mensagens = preparar_mensagem_cupons(cupons)
             
             if lista_mensagens:
-                print(f"| ENVIANDO: Encontrados {len(lista_mensagens)} cupons para envio com imagem.")
                 for item in lista_mensagens:
                     enviar_telegram(
                         mensagem_formatada=item['mensagem'], 
                         url_link=item['url_link'], 
                         image_url=item['image_url']
                     )
-                print("| SUCESSO: Envio de cupons concluído.")
             else:
                 print("| NENHUM CUPOM: Nenhum cupom novo encontrado neste turno.")
         finally:
             if driver: driver.quit()
         sys.exit(0)
 
-    # --- MODO OFERTAS (Lógica Nova) ---
     else:
         GRUPO_ATUAL = ARGUMENTO_PRINCIPAL.upper()
         LISTA_ALVOS_A_RODAR = []
 
-        # 1. MODO FEMININO (O Novo Padrão)
         if GRUPO_ATUAL == "MULHER" or GRUPO_ATUAL == "FEMININO":
-            print("💅 MODO FOCO: Público Feminino (Ticket Baixo)!")
-            # Roda a lista estratégica feminina + Shopee (que elas amam)
-            # Nota: Certifique-se que LISTA_MESTRE_FEMININA foi criada lá em cima!
             LISTA_ALVOS_A_RODAR = LISTA_MESTRE_FEMININA
-
-        # 2. MODO GERAL (Antigo "TODOS") - Use 'python script.py TODOS' para ativar
         elif GRUPO_ATUAL == "TODOS" or GRUPO_ATUAL == "GERAL":
-            print("🌍 MODO GERAL: Rodando TODAS as listas (Demorado)!")
-            # Junta tudo que existe
-            LISTA_ALVOS_A_RODAR = LISTA_MESTRE_MAGALU + LISTA_MESTRE_AMAZON + LISTA_MESTRE_ML + LISTA_MESTRE_SHOPEE + LISTA_MESTRE_FEMININA
-
-        # 3. MODOS ESPECÍFICOS POR LOJA (Para testes)
+            LISTA_ALVOS_A_RODAR = LISTA_MESTRE_MAGALU + LISTA_MESTRE_AMAZON + LISTA_MESTRE_ML + LISTA_MESTRE_FEMININA + LISTA_MESTRE_KABUM + LISTA_MESTRE_ALIEXPRESS
         elif GRUPO_ATUAL == "AMAZON":
-            print("📦 MODO DE TESTE: Apenas AMAZON!")
             LISTA_ALVOS_A_RODAR = LISTA_MESTRE_AMAZON
         elif GRUPO_ATUAL == "ML" or GRUPO_ATUAL == "MERCADOLIVRE":
-            print("📦 MODO DE TESTE: Apenas MERCADO LIVRE!")
             LISTA_ALVOS_A_RODAR = LISTA_MESTRE_ML
-        elif GRUPO_ATUAL == "SHOPEE":
-            print("📦 MODO DE TESTE: Apenas SHOPEE!")
-            LISTA_ALVOS_A_RODAR = LISTA_MESTRE_SHOPEE
-        # 4. MODOS MANUAIS (Shopee Links.txt)
-        # Substitua o antigo bloco "MANUAL" e o "SHOPEE" por este unificado:
-        elif GRUPO_ATUAL.startswith("MANUAL") or GRUPO_ATUAL.startswith("SHOPEE"):
-            print("📝 MODO MANUAL PURO: Apenas links do arquivo 'shopee_links.txt'!")
-            
-            # Tenta pegar preço limite se tiver (ex: MANUAL50 ou SHOPEE100)
-            preco_limite = None
-            if any(c.isdigit() for c in GRUPO_ATUAL):
-                try:
-                    preco_limite = float(re.sub(r'[^0-9]', '', GRUPO_ATUAL)) # Extrai só o número
-                    print(f"🏷️ FILTRO DE PREÇO ATIVO: Até R${preco_limite:.0f}")
-                except: pass
-            
-            # Inicia o driver APENAS para o processamento manual
-            # Não chamamos a função main(), então ele não abre Magalu/Amazon
-            d_manual = iniciar_driver()
-            try:
-                processar_shopee_manual(d_manual, set(), preco_maximo=preco_limite)
-            finally:
-                if d_manual: d_manual.quit()
-            
-            sys.exit(0) # Encerra o script aqui para garantir
+        
+        # --- AQUI ESTÁ O SEU BLOCO NOVO PARA TESTAR A AWIN ---
+        elif GRUPO_ATUAL == "AWIN":
+            print(f"🕒 Iniciando teste focado na AWIN (KaBuM e AliExpress)...")
+            LISTA_ALVOS_A_RODAR = LISTA_MESTRE_KABUM + LISTA_MESTRE_ALIEXPRESS
+            main(LISTA_ALVOS_A_RODAR)
+            sys.exit(0)
+        # -----------------------------------------------------
 
-        # 5. TURNOS RELÂMPAGO (TODAS AS LOJAS COM FILTRO DE PREÇO)
         elif GRUPO_ATUAL.startswith("RELAMPAGO"):
             try:
                 PRECO_LIMITE_RELAMPAGO = float(GRUPO_ATUAL.replace("RELAMPAGO", ""))
-                print(f"⚡ TURNO RELÂMPAGO: Todas as lojas até R${PRECO_LIMITE_RELAMPAGO:.0f}!")
-                LISTA_ALVOS_A_RODAR = LISTA_MESTRE_SHOPEE + LISTA_MESTRE_ML + LISTA_MESTRE_AMAZON + LISTA_MESTRE_MAGALU
+                LISTA_ALVOS_A_RODAR = LISTA_MESTRE_ML + LISTA_MESTRE_AMAZON + LISTA_MESTRE_MAGALU
                 main(LISTA_ALVOS_A_RODAR, preco_maximo=PRECO_LIMITE_RELAMPAGO)
-                # Também processa links manuais com o mesmo filtro
-                print("\n🚀 [RELÂMPAGO] Processando links manuais com filtro...")
-                d_manual = iniciar_driver()
-                try:
-                    processar_shopee_manual(d_manual, set(), preco_maximo=PRECO_LIMITE_RELAMPAGO)
-                finally:
-                    if d_manual: d_manual.quit()
                 sys.exit(0)
             except ValueError:
-                print(f"❌ Argumento inválido: '{GRUPO_ATUAL}'. Use RELAMPAGO50, RELAMPAGO100... etc.")
                 sys.exit(1)
-
-        # --- NOVOS MODOS INDIVIDUAIS POR LOJA (COM PREÇO) ---
-        
-        # 1. MAGALU R$ XX
         elif GRUPO_ATUAL.startswith("MAGALU") and any(c.isdigit() for c in GRUPO_ATUAL):
             try:
-                preco_limite = float(re.sub(r'[^0-9]', '', GRUPO_ATUAL)) # Extrai só o número
-                print(f"🛍️ MODO MAGALU - TETO: R${preco_limite:.0f}")
-                # Roda só as listas do Magalu
+                preco_limite = float(re.sub(r'[^0-9]', '', GRUPO_ATUAL)) 
                 main(LISTA_MESTRE_MAGALU, preco_maximo=preco_limite)
-            except: print("❌ Erro ao ler preço. Use MAGALU50, MAGALU100...")
-
-        # 2. AMAZON R$ XX
+            except: pass
         elif GRUPO_ATUAL.startswith("AMAZON") and any(c.isdigit() for c in GRUPO_ATUAL):
             try:
                 preco_limite = float(re.sub(r'[^0-9]', '', GRUPO_ATUAL))
-                print(f"📦 MODO AMAZON - TETO: R${preco_limite:.0f}")
                 main(LISTA_MESTRE_AMAZON, preco_maximo=preco_limite)
-            except: print("❌ Erro ao ler preço. Use AMAZON50...")
-
-       # 3. MERCADO LIVRE R$ XX (Versão Corrigida)
+            except: pass
         elif GRUPO_ATUAL.startswith("ML") and any(c.isdigit() for c in GRUPO_ATUAL):
             try:
                 preco_limite = float(re.sub(r'[^0-9]', '', GRUPO_ATUAL))
-                print(f"🤝 MODO MERCADO LIVRE - TETO: R${preco_limite:.0f}")
-                # Aqui passamos a lista TODA, o filtro de preço será feito dentro do main
                 main(LISTA_MESTRE_ML, preco_maximo=preco_limite)
-                sys.exit(0) # Adicione isso para ele não tentar rodar o 'else' abaixo
-            except: print("❌ Erro ao ler preço. Use ML50...")
-
-        # 4. SHOPEE MANUAL R$ XX
-        elif GRUPO_ATUAL.startswith("SHOPEE") and any(c.isdigit() for c in GRUPO_ATUAL):
-            try:
-                preco_limite = float(re.sub(r'[^0-9]', '', GRUPO_ATUAL))
-                print(f"🟠 MODO SHOPEE MANUAL - TETO: R${preco_limite:.0f}")
-                # Shopee é especial: vai direto para o manual
-                d_manual = iniciar_driver()
-                try:
-                    processar_shopee_manual(d_manual, set(), preco_maximo=preco_limite)
-                finally:
-                    if d_manual: d_manual.quit()
-            except: print("❌ Erro ao ler preço. Use SHOPEE50...")
-
-        # ----------------------------------------------------
-
-        # 4. MODOS POR TURNO (MANHA, TARDE, NOITE, ALMOCO)
+                sys.exit(0) 
+            except: pass
         else:
             print(f"🕒 Configurando turno estratégico: {GRUPO_ATUAL}")
-            
-            # --- CORREÇÃO AQUI: BUSCA EM TODAS AS LOJAS MESTRAS ---
             alvos_magalu = selecionar_alvos_por_grupo(LISTA_MESTRE_MAGALU, GRUPO_ATUAL)
             alvos_amazon = selecionar_alvos_por_grupo(LISTA_MESTRE_AMAZON, GRUPO_ATUAL)
             alvos_ml = selecionar_alvos_por_grupo(LISTA_MESTRE_ML, GRUPO_ATUAL)
             alvos_fem = selecionar_alvos_por_grupo(LISTA_MESTRE_FEMININA, GRUPO_ATUAL)
-            alvos_shopee = selecionar_alvos_por_grupo(LISTA_MESTRE_SHOPEE, GRUPO_ATUAL)
+            alvos_kabum = selecionar_alvos_por_grupo(LISTA_MESTRE_KABUM, GRUPO_ATUAL)
+            alvos_ali = selecionar_alvos_por_grupo(LISTA_MESTRE_ALIEXPRESS, GRUPO_ATUAL)
             
-            # Junta tudo em uma única lista de ataque
-            LISTA_ALVOS_A_RODAR = alvos_magalu + alvos_amazon + alvos_ml + alvos_fem + alvos_shopee
+            LISTA_ALVOS_A_RODAR = alvos_magalu + alvos_amazon + alvos_ml + alvos_fem + alvos_kabum + alvos_ali
 
-        # Validação final para não rodar vazio
         num_alvos = len(LISTA_ALVOS_A_RODAR)
-        print(f"| DEBUG: Encontrados {num_alvos} alvos para o comando '{GRUPO_ATUAL}'.")
-
+        
         if num_alvos == 0:
-            print(f"\n[🛑 ERRO] Nenhuma lista encontrada para '{GRUPO_ATUAL}'.")
-            print("| Carregando lista FEMININA de segurança...")
             main(LISTA_MESTRE_FEMININA)
         else:
-            # Roda Magalu/Amazon (mas agora NÃO fecha o navegador no fim)
             main(LISTA_ALVOS_A_RODAR)
-
-            # Agora passamos para a Shopee
-            if GRUPO_ATUAL == "ALMOCO":
-                print("\n🚀 [AUTO] Processando links manuais da Shopee (Horario de Almoco)...")
-                
-                # REAPROVEITA O DRIVER GLOBO (chrome_driver)
-                # Não precisa chamar iniciar_driver() de novo se o anterior ainda está vivo.
-                # Mas por segurança, chamamos ele, pois ele verifica se já existe conexão.
-                d_manual = iniciar_driver() 
-                
-                try:
-                    processar_shopee_manual(d_manual, set())
-                except Exception as e:
-                    print(f"| ❌ Erro na Shopee: {e}")
-                finally:
-                    # AGORA SIM, no final de tudo, podemos fechar
-                    if d_manual: d_manual.quit()

@@ -12,6 +12,7 @@ __pycache__/
 historico_precos.csv
 *_backup.csv
 cache_envios_24h.json
+cache_envios_5dias.json
 shopee_links.txt
 links.txt
 *.log
