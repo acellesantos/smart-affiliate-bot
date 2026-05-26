@@ -6,7 +6,7 @@ echo Finalizando processos do Chrome existentes...
 taskkill /F /IM chrome.exe /T >nul 2>&1
 
 echo Iniciando Chrome no modo de depuracao...
-start "" "%CHROME_PATH%" --remote-debugging-port=9222 --user-data-dir="C:\Users\usuario\whatsapp_selenium_profile"
+start "" "%CHROME_PATH%" --remote-debugging-port=9222 --user-data-dir="C:\Projetos\whatsapp_selenium_profile"
 
 echo.
 echo ========================================================

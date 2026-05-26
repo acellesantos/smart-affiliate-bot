@@ -12,10 +12,12 @@ Este é um ecossistema completo de **RPA (Robotic Process Automation)** desenvol
 Para humanizar a curadoria e gerar autoridade no nicho de tecnologia e promoções, o projeto utiliza a **Celle**, um avatar 3D que atua como a interface entre o robô e os usuários finais. A Celle representa a "inteligência" por trás da seleção de produtos, aumentando o engajamento e a conversão do grupo **Achadinhos da Celle**.
 
 ## ✨ Funcionalidades
-- **Scraping Inteligente:** Monitoramento em tempo real (Amazon, Mercado Livre, Magalu e Shopee).
+- **Scraping Inteligente:** Monitoramento em tempo real (Amazon, Mercado Livre, Magalu e Shopee) com Sistema de Blacklist Blindada para ignorar automaticamente produtos fora do nicho através de correspondência case-insensitive (.lower()).
 - **Validação com Pandas:** Integração com banco de dados para analisar o histórico de preços e validar se o desconto é genuíno.
 - **Segurança & Mimetismo Humano:** Conexão via porta de depuração remota (9222) para evitar detecção por sistemas anti-bot.
-- **Gestão de Cache:** Sistema de controle de 24h para evitar spam e reenvio de ofertas duplicadas.
+- **Gestão de Cache Avançada:** Sistema de controle de 5 dias (120h) integrado diretamente na listagem principal, evitando cliques desnecessários com o Selenium e economizando processamento.
+- **Inteligência Artificial Nativa (OpenRouter):** Integração com modelos de linguagem avançados (DeepSeek/Qwen) para automação e tomadas de decisão inteligentes.
+- **Módulo Sazonal Inteligente:** Estrutura pronta para priorização automática de produtos de acordo com grandes eventos (como a Copa do Mundo e Dia dos Namorados) através de uma única chave de configuração.
 - **Copywriting Dinâmico:** Geração de mensagens persuasivas adaptadas por nicho (Beleza, Tecnologia, Casa).
 - **Agendamento por Turnos:** Scripts configurados para rodar em horários estratégicos (Manhã, Tarde e Noite).
 
@@ -24,6 +26,7 @@ Para humanizar a curadoria e gerar autoridade no nicho de tecnologia e promoçõ
 - **Selenium & BeautifulSoup4** (Navegação e extração de dados)
 - **Pandas** (Tratamento de dados e histórico de preços)
 - **Python-dotenv** (Gestão de variáveis de ambiente e segurança)
+- **OpenRouter API / DeepSeek** (Modelos de IA para decisões inteligentes)
 - **Git** para versionamento semântico
 
 ## 📂 Estrutura do Projeto
